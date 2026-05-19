@@ -8,15 +8,13 @@ from save.savesetup import save_progression, get_unlocked_cards
 from config.constants import (
     SCREEN_W, SCREEN_H, BG_COLOR, TEXT_COLOR, TEXT_SUB,
     ACCENT_GOLD, ACCENT_GREEN, ACCENT_RED, COLOR_X, COLOR_O,
-    CARD_W, CARD_H, GRID_LINE_COLOR, BG_ACCENT,
+    CARD_W, CARD_H,
 )
 from config.cards import pick_random, get_by_name
-from config.bosses import BOSS_LIST, BOSS_MAP
+from config.bosses import BOSS_LIST
 from renders.rendering import (
-    draw_board, draw_card, draw_score, draw_tokens, draw_level_info,
-    draw_start_card,
+    draw_card, draw_score, draw_tokens,
     draw_centered_text, draw_big_centered_text,
-    draw_multiline_text,
 )
 
 
@@ -110,17 +108,10 @@ class GameEngine:
 
     def evaluate_and_settle(self):
         pl = self.engine.state
-        result = None
+        base_reward = 2
 
         if pl.is_boss and pl.current_boss:
             result = self._evaluate_boss()
-            if result == "win":
-                base = 2
-                pl.tokens += max(1, round(base * pl.draw_multiplier))
-            elif result == "draw":
-                pl.draw_multiplier *= 0.9
-            else:
-                pl.draw_multiplier = 1.0
         else:
             # normal game: compare lines
             xp_lines = self.board.count_lines_for(PLAYER_X)
@@ -130,24 +121,24 @@ class GameEngine:
             pl.player.score += score
             pl.score_this_level += score
 
-            won = xp_lines > op_lines or pl.player.score >= pl.current_target
-            if pl.player.score >= pl.current_target:
-                won = True
-
-            if result == "win":
-                base = 2
-                pl.tokens += max(1, round(base * pl.draw_multiplier))
-                pl.draw_multiplier = 1.0
-            elif result == "draw":
-                pl.draw_multiplier *= 0.9
+            if xp_lines > op_lines or pl.player.score >= pl.current_target:
+                result = "win"
+            elif xp_lines == op_lines:
+                result = "draw"
             else:
-                pl.draw_multiplier = 1.0
+                result = "lose"
 
-            result = "win" if won else "lose"
+        if result == "win":
+            pl.player.tokens += max(1, round(base_reward * pl.draw_multiplier))
+            pl.draw_multiplier = 1.0
+        elif result == "draw":
+            pl.draw_multiplier *= 0.9
+        else:
+            pl.draw_multiplier = 1.0
 
         pl.game_result = result
         self.showing_result = True
-        self.state = "waiting"
+        self.board.game_over = True
         return result
 
     def _evaluate_boss(self):
@@ -188,7 +179,6 @@ class GameEngine:
                 pl.total_score += score
                 pl.player.score += score
                 pl.score_this_level += score
-                pl.tokens += 2
                 return "win"
             elif xp == op and self.board.is_full():
                 score = self.card_system.calculate_score(self.board, pl.player, pl.get_multiplier())
@@ -258,18 +248,13 @@ class GameEngine:
             sx = SCREEN_W // 2 - (3 * CARD_W) // 2
             for i, name in enumerate(self.starter_cards):
                 card = get_by_name(name)
-                bg = (45, 45, 80)
-                border = ACCENT_GOLD
-                pygame.draw.rect(surf, bg, (sx + i * (CARD_W + 12), 320, CARD_W, CARD_H), border_radius=8)
-                pygame.draw.rect(surf, border, (sx + i * (CARD_W + 12), 320, CARD_W, CARD_H), 2, border_radius=8)
-                cost_val = card.cost if card else 0
-                pygame.draw.circle(surf, ACCENT_GOLD, (sx + i * (CARD_W + 12) + 20, 340), 14)
-                cts = pygame.font.SysFont("consolas", 36).render(str(cost_val), True, (0, 0, 0))
-                surf.blit(cts, (sx + i * (CARD_W + 12) + 20 - cts.get_width() // 2, 340 - cts.get_height() // 2))
-                nts = pygame.font.SysFont("sans-serif", 20).render(name, True, TEXT_COLOR)
-                surf.blit(nts, (sx + i * (CARD_W + 12) + 10, 375))
-                dts = pygame.font.SysFont("sans-serif", 16).render(card.desc if card else "", True, TEXT_SUB)
-                surf.blit(dts, (sx + i * (CARD_W + 12) + 10, 405))
+                cx = sx + i * (CARD_W + 12)
+                draw_card(
+                    surf, name, card.cost if card else 0, card.desc if card else "",
+                    cx, 320, CARD_W, CARD_H,
+                    is_highlighted=(self.hover_pos == f"starter:{i}"),
+                    can_afford=True,
+                )
 
         elif self.state == "boss_intro":
             boss = pl.current_boss
@@ -361,20 +346,15 @@ class GameEngine:
                 sx = (SCREEN_W - len(hand) * CARD_W) // 2
                 for i, name in enumerate(hand):
                     card = get_by_name(name)
-                    bg = (50, 50, 90) if self.hover_pos == f"card:{i}" else (35, 35, 60)
-                    border = ACCENT_GOLD if self.hover_pos == f"card:{i}" else ACCENT_GREEN
+                    cost_val = card.cost if card else 0
                     cx = sx + i * (CARD_W + 12)
                     cy = SCREEN_H - CARD_H - 40
-                    pygame.draw.rect(surf, bg, (cx, cy, CARD_W, CARD_H), border_radius=8)
-                    pygame.draw.rect(surf, border, (cx, cy, CARD_W, CARD_H), 2, border_radius=8)
-                    cost_val = card.cost if card else 0
-                    pygame.draw.circle(surf, ACCENT_GOLD, (cx + 20, cy + 20), 14)
-                    cts = pygame.font.SysFont("consolas", 36).render(str(cost_val), True, (0, 0, 0))
-                    surf.blit(cts, (cx + 20 - cts.get_width() // 2, cy + 20 - cts.get_height() // 2))
-                    nts = pygame.font.SysFont("sans-serif", 20).render(name, True, TEXT_COLOR)
-                    surf.blit(nts, (cx + 10, cy + 45))
-                    desc_font = pygame.font.SysFont("sans-serif", 14)
-                    draw_multiline_text(surf, card.desc if card else "", desc_font, TEXT_SUB, cx + 10, cy + 75, CARD_W - 20, 5)
+                    draw_card(
+                        surf, name, cost_val, card.desc if card else "",
+                        cx, cy, CARD_W, CARD_H,
+                        is_highlighted=(self.hover_pos == f"card:{i}"),
+                        can_afford=(pl.player.tokens >= cost_val),
+                    )
 
             # result overlay
             if self.showing_result:
@@ -397,21 +377,14 @@ class GameEngine:
                 for i, name in enumerate(self.shop_cards):
                     card = get_by_name(name)
                     cost_val = card.cost if card else 0
-                    bg = (50, 50, 90)
-                    border = ACCENT_GREEN if pl.player.tokens >= cost_val else ACCENT_RED
                     cx = sx + i * (CARD_W + 12)
                     cy = SCREEN_H // 2 - CARD_H // 2 - 20
-                    pygame.draw.rect(surf, bg, (cx, cy, CARD_W, CARD_H), border_radius=8)
-                    pygame.draw.rect(surf, border, (cx, cy, CARD_W, CARD_H), 2, border_radius=8)
-                    pygame.draw.circle(surf, ACCENT_GOLD, (cx + 20, cy + 20), 14)
-                    cts = pygame.font.SysFont("consolas", 36).render(str(cost_val), True, (0, 0, 0))
-                    surf.blit(cts, (cx + 20 - cts.get_width() // 2, cy + 20 - cts.get_height() // 2))
-                    nts = pygame.font.SysFont("sans-serif", 20).render(name, True, TEXT_COLOR)
-                    surf.blit(nts, (cx + 10, cy + 45))
-                    desc_font = pygame.font.SysFont("sans-serif", 14)
-                    draw_multiline_text(surf, card.desc if card else "", desc_font, TEXT_SUB, cx + 10, cy + 75, CARD_W - 20, 5)
-                    price = pygame.font.SysFont("sans-serif", 14).render(f"{cost_val} tokens", True, ACCENT_GOLD)
-                    surf.blit(price, (cx + 10, cy + 105))
+                    draw_card(
+                        surf, name, cost_val, card.desc if card else "",
+                        cx, cy, CARD_W, CARD_H,
+                        is_highlighted=(self.hover_pos == f"shop:{i}"),
+                        can_afford=(pl.player.tokens >= cost_val),
+                    )
 
             continue_btn = pygame.Rect(SCREEN_W // 2 - 80, SCREEN_H - 100, 160, 50)
             pygame.draw.rect(surf, ACCENT_GREEN, continue_btn, border_radius=8)
@@ -481,6 +454,20 @@ class GameEngine:
             return
 
         elif self.state == "game":
+            # If we're displaying a result overlay, any click advances to the next phase.
+            if self.showing_result:
+                was_boss = pl.is_boss
+                self.showing_result = False
+                pl.game_result = None
+                self.player_placed_this_turn = False
+                self.card_played_this_turn = False
+                self.card_system.post_game_cleanup(pl.player)
+                if was_boss:
+                    self.do_shop()
+                else:
+                    self.start_game()
+                return
+
             gs = pl.get_grid_size()
             avail = min((SCREEN_W - 120) / gs, (SCREEN_H - 300) / gs)
             avail = int(avail)

@@ -67,54 +67,113 @@ def draw_lines(surface: pygame.Surface, lines: list[tuple[int, list[tuple[int, i
         pygame.draw.line(surface, c, (px, py), (ex, ey), 6)
 
 
+def _wrap_lines(text: str, font, max_width: int) -> list[str]:
+    """Wrap text into lines that fit max_width using font.size for measurement."""
+    if not text:
+        return []
+    words = text.split()
+    if not words:
+        return []
+    space_w = font.size(" ")[0]
+    lines: list[str] = []
+    current: list[str] = []
+    current_w = 0
+    for word in words:
+        word_w = font.size(word)[0]
+        if not current:
+            current = [word]
+            current_w = word_w
+            continue
+        # account for space + word
+        if current_w + space_w + word_w > max_width:
+            lines.append(" ".join(current))
+            current = [word]
+            current_w = word_w
+        else:
+            current.append(word)
+            current_w += space_w + word_w
+    if current:
+        lines.append(" ".join(current))
+    return lines
+
+
 def draw_card(surface: pygame.Surface, card_name: str, card_cost: int, card_desc: str,
               x: int, y: int, w: int, h: int,
-              is_highlighted: bool = False, can_afford: bool = False):
-    """Draw a single card."""
+              is_highlighted: bool = False, can_afford: bool = True):
+    """Draw a single card with wrapped name and description."""
     from config.constants import CARD_BG, CARD_BORDER, CARD_HIGHLIGHT
 
     bg = CARD_HIGHLIGHT if is_highlighted else CARD_BG
-    border = CARD_HIGHLIGHT if is_highlighted else CARD_BORDER
-    if can_afford:
+    if is_highlighted:
+        border = ACCENT_GOLD
+    elif can_afford:
         border = ACCENT_GREEN
+    else:
+        border = CARD_BORDER
 
     pygame.draw.rect(surface, bg, (x, y, w, h), border_radius=8)
     pygame.draw.rect(surface, border, (x, y, w, h), 2, border_radius=8)
 
-    # cost circle
-    pygame.draw.circle(surface, ACCENT_GOLD, (x + 20, y + 20), 14)
-    cost_surf = pygame.font.SysFont("consolas", CARD_COST_SIZE).render(str(card_cost), True, (0, 0, 0))
-    surface.blit(cost_surf, (x + 20 - cost_surf.get_width() // 2, y + 20 - cost_surf.get_height() // 2))
+    # cost circle (top-left)
+    cost_cx, cost_cy, cost_r = x + 20, y + 20, 14
+    pygame.draw.circle(surface, ACCENT_GOLD, (cost_cx, cost_cy), cost_r)
+    cost_font = pygame.font.SysFont("consolas", 24)
+    cost_surf = cost_font.render(str(card_cost), True, (0, 0, 0))
+    surface.blit(cost_surf,
+                 (cost_cx - cost_surf.get_width() // 2,
+                  cost_cy - cost_surf.get_height() // 2))
 
-    # name
-    name_surf = pygame.font.SysFont("sans-serif", CARD_NAME_SIZE).render(card_name, True, TEXT_COLOR)
-    surface.blit(name_surf, (x + 10, y + 45))
+    pad = 8
+    # name — wraps to up to 2 lines, first line clears the cost circle
+    name_font = pygame.font.SysFont("sans-serif", 18, bold=True)
+    name_line_h = name_font.get_linesize()
+    first_line_x = cost_cx + cost_r + 6  # right of the cost circle
+    name_first_width = (x + w - pad) - first_line_x
+    name_full_width = w - 2 * pad
 
-    # desc
-    lines = _wrap_text(card_desc, w - 20, CARD_DESC_SIZE)
-    for i, line in enumerate(lines[:4]):
-        desc_surf = pygame.font.SysFont("sans-serif", CARD_DESC_SIZE // 3, bold=True).render(line, True, TEXT_SUB)
-        surface.blit(desc_surf, (x + 10, y + 80 + i * 14))
+    name_lines: list[str] = []
+    if card_name:
+        words = card_name.split()
+        first: list[str] = []
+        first_w = 0
+        space_w = name_font.size(" ")[0]
+        idx = 0
+        for i, word in enumerate(words):
+            ww = name_font.size(word)[0]
+            extra = (space_w if first else 0) + ww
+            if first and first_w + extra > name_first_width:
+                idx = i
+                break
+            first.append(word)
+            first_w += extra
+            idx = i + 1
+        if first:
+            name_lines.append(" ".join(first))
+        if idx < len(words):
+            rest_text = " ".join(words[idx:])
+            wrapped_rest = _wrap_lines(rest_text, name_font, name_full_width)
+            for line in wrapped_rest[:1]:
+                name_lines.append(line)
 
+    if name_lines:
+        surface.blit(name_font.render(name_lines[0], True, TEXT_COLOR),
+                     (first_line_x, cost_cy - name_line_h // 2))
+    name_bottom = cost_cy + cost_r
+    if len(name_lines) > 1:
+        surface.blit(name_font.render(name_lines[1], True, TEXT_COLOR),
+                     (x + pad, name_bottom + 2))
+        name_bottom += 2 + name_line_h
 
-def _wrap_text(text: str, max_w: int, font_size: int) -> list[str]:
-    font = pygame.font.SysFont("sans-serif", font_size)
-    words = text.split()
-    lines = []
-    current_line = []
-    current_w = 0
-    for word in words:
-        w = font.size(f"{word} ")[0]
-        if current_w + w > max_w:
-            lines.append(" ".join(current_line))
-            current_line = [word]
-            current_w = font.size(f"{word} ")[0]
-        else:
-            current_line.append(word)
-            current_w += w
-    if current_line:
-        lines.append(" ".join(current_line))
-    return lines
+    # description, fills remaining vertical space
+    desc_font = pygame.font.SysFont("sans-serif", 13)
+    desc_line_h = desc_font.get_linesize()
+    desc_y = name_bottom + 8
+    available_h = (y + h - pad) - desc_y
+    max_lines = max(1, available_h // desc_line_h)
+    desc_lines = _wrap_lines(card_desc or "", desc_font, name_full_width)
+    for i, line in enumerate(desc_lines[:max_lines]):
+        surface.blit(desc_font.render(line, True, TEXT_SUB),
+                     (x + pad, desc_y + i * desc_line_h))
 
 
 def draw_score(surface: pygame.Surface, score: int, target: int, x: int, y: int):
@@ -159,21 +218,8 @@ def draw_big_centered_text(surface, text, font, color, y):
 
 def draw_multiline_text(surface, text, font, color, x, y, max_width, max_lines=4):
     """Wrapped text rendering within a max_width box."""
-    words = text.split()
-    lines: list[str] = []
-    current_line: list[str] = []
-    current_w = 0
-    for word in words:
-        w = font.size(f"{word} ")[0]
-        if current_w + w > max_width:
-            lines.append(" ".join(current_line))
-            current_line = [word]
-            current_w = font.size(f"{word} ")[0]
-        else:
-            current_line.append(word)
-            current_w += w
-    if current_line:
-        lines.append(" ".join(current_line))
+    lines = _wrap_lines(text or "", font, max_width)
+    line_h = font.get_linesize()
     for i, line_text in enumerate(lines[:max_lines]):
         ls = font.render(line_text, True, color)
-        surface.blit(ls, (x, y + i * (font.size("A")[1] + 2)))
+        surface.blit(ls, (x, y + i * line_h))

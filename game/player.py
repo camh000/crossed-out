@@ -33,6 +33,10 @@ class RunState:
     shop_phase: bool = False
     run_complete: bool = False
     won_run: bool = False
+    current_boss: any = None
+    current_boss_setup: any = None
+    game_result: str | None = None
+    draw_multiplier: float = field(default_factory=lambda: 1.0)
     player: Player = field(default_factory=Player)
 
     def get_grid_size(self) -> int:
@@ -68,3 +72,4 @@ class RunState:
         self.player.cells_played = []
         self.player.placed_on_turn = 0
         self.player.can_play_card = True
+        self.draw_multiplier = 1.0

@@ -155,3 +155,25 @@ def draw_big_centered_text(surface, text, font, color, y):
     rect.centerx = surface.get_width() // 2
     rect.y = y
     surface.blit(font.render(text, True, color), rect)
+
+
+def draw_multiline_text(surface, text, font, color, x, y, max_width, max_lines=4):
+    """Wrapped text rendering within a max_width box."""
+    words = text.split()
+    lines: list[str] = []
+    current_line: list[str] = []
+    current_w = 0
+    for word in words:
+        w = font.size(f"{word} ")[0]
+        if current_w + w > max_width:
+            lines.append(" ".join(current_line))
+            current_line = [word]
+            current_w = font.size(f"{word} ")[0]
+        else:
+            current_line.append(word)
+            current_w += w
+    if current_line:
+        lines.append(" ".join(current_line))
+    for i, line_text in enumerate(lines[:max_lines]):
+        ls = font.render(line_text, True, color)
+        surface.blit(ls, (x, y + i * (font.size("A")[1] + 2)))

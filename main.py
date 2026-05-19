@@ -16,6 +16,7 @@ from renders.rendering import (
     draw_board, draw_card, draw_score, draw_tokens, draw_level_info,
     draw_start_card,
     draw_centered_text, draw_big_centered_text,
+    draw_multiline_text,
 )
 
 
@@ -113,6 +114,13 @@ class GameEngine:
 
         if pl.is_boss and pl.current_boss:
             result = self._evaluate_boss()
+            if result == "win":
+                base = 2
+                pl.tokens += max(1, round(base * pl.draw_multiplier))
+            elif result == "draw":
+                pl.draw_multiplier *= 0.9
+            else:
+                pl.draw_multiplier = 1.0
         else:
             # normal game: compare lines
             xp_lines = self.board.count_lines_for(PLAYER_X)
@@ -124,8 +132,16 @@ class GameEngine:
 
             won = xp_lines > op_lines or pl.player.score >= pl.current_target
             if pl.player.score >= pl.current_target:
-                pl.tokens += 2
                 won = True
+
+            if result == "win":
+                base = 2
+                pl.tokens += max(1, round(base * pl.draw_multiplier))
+                pl.draw_multiplier = 1.0
+            elif result == "draw":
+                pl.draw_multiplier *= 0.9
+            else:
+                pl.draw_multiplier = 1.0
 
             result = "win" if won else "lose"
 
@@ -357,8 +373,8 @@ class GameEngine:
                     surf.blit(cts, (cx + 20 - cts.get_width() // 2, cy + 20 - cts.get_height() // 2))
                     nts = pygame.font.SysFont("sans-serif", 20).render(name, True, TEXT_COLOR)
                     surf.blit(nts, (cx + 10, cy + 45))
-                    dts = pygame.font.SysFont("sans-serif", 15).render(card.desc if card else "", True, TEXT_SUB)
-                    surf.blit(dts, (cx + 10, cy + 75))
+                    desc_font = pygame.font.SysFont("sans-serif", 14)
+                    draw_multiline_text(surf, card.desc if card else "", desc_font, TEXT_SUB, cx + 10, cy + 75, CARD_W - 20, 5)
 
             # result overlay
             if self.showing_result:
@@ -392,8 +408,8 @@ class GameEngine:
                     surf.blit(cts, (cx + 20 - cts.get_width() // 2, cy + 20 - cts.get_height() // 2))
                     nts = pygame.font.SysFont("sans-serif", 20).render(name, True, TEXT_COLOR)
                     surf.blit(nts, (cx + 10, cy + 45))
-                    dts = pygame.font.SysFont("sans-serif", 15).render(card.desc if card else "", True, TEXT_SUB)
-                    surf.blit(dts, (cx + 10, cy + 75))
+                    desc_font = pygame.font.SysFont("sans-serif", 14)
+                    draw_multiline_text(surf, card.desc if card else "", desc_font, TEXT_SUB, cx + 10, cy + 75, CARD_W - 20, 5)
                     price = pygame.font.SysFont("sans-serif", 14).render(f"{cost_val} tokens", True, ACCENT_GOLD)
                     surf.blit(price, (cx + 10, cy + 105))
 
@@ -403,14 +419,22 @@ class GameEngine:
             surf.blit(cont_t, (continue_btn.centerx - cont_t.get_width() // 2, continue_btn.centery - cont_t.get_height() // 2))
 
         elif self.state == "gameover":
+            pl = self.engine.state
             won = pl.won_run
             txt = "RUN COMPLETE!" if won else "RUN FAILED!"
             col = ACCENT_GREEN if won else ACCENT_RED
             draw_big_centered_text(surf, txt, self.big_font, col, 200)
             s1 = pygame.font.SysFont("sans-serif", 24).render(f"Score: {pl.total_score}", True, TEXT_COLOR)
             surf.blit(s1, (SCREEN_W // 2 - s1.get_width() // 2, 320))
-            t3 = self.font.render("Press [X] to restart", True, TEXT_SUB)
-            surf.blit(t3, (SCREEN_W // 2 - t3.get_width() // 2, 400))
+            s2 = pygame.font.SysFont("sans-serif", 20).render(f"Final Level: {pl.level}  |  Draw Penalty: {100 - int((1 - pl.draw_multiplier) * 100):.0f}%", True, TEXT_SUB)
+            surf.blit(s2, (SCREEN_W // 2 - s2.get_width() // 2, 360))
+            
+            btn_w, btn_h = 200, 50
+            btn = pygame.Rect(SCREEN_W // 2 - btn_w // 2, SCREEN_H - 120, btn_w, btn_h)
+            hover_color = ACCENT_GOLD if self.hover_pos and btn.collidepoint(pygame.mouse.get_pos()) else ACCENT_GREEN
+            pygame.draw.rect(surf, hover_color, btn, border_radius=8)
+            btn_txt = self.font.render("MAIN MENU", True, (0, 0, 0))
+            surf.blit(btn_txt, (btn.centerx - btn_txt.get_width() // 2, btn.centery - btn_txt.get_height() // 2))
 
         pygame.display.flip()
 
@@ -419,7 +443,7 @@ class GameEngine:
 
         if self.state == "menu":
             btn = pygame.Rect(SCREEN_W // 2 - 160, SCREEN_H // 2 - 30, 320, 60)
-            if btn.contains(mx, my):
+            if btn.collidepoint(mx, my):
                 self.new_run()
 
         elif self.state == "transition":
@@ -448,6 +472,13 @@ class GameEngine:
             if pl.current_boss and pl.current_boss.mechanic == "timed":
                 self.countdown_start = pygame.time.get_ticks()
             self.state = "game"
+
+        elif self.state == "gameover":
+            b_w, b_h = 200, 50
+            btn = pygame.Rect(SCREEN_W // 2 - b_w // 2, SCREEN_H - 120, b_w, b_h)
+            if btn.collidepoint(mx, my):
+                self.state = "menu"
+            return
 
         elif self.state == "game":
             gs = pl.get_grid_size()
@@ -548,7 +579,7 @@ class GameEngine:
                             break
 
             cont = pygame.Rect(SCREEN_W // 2 - 80, SCREEN_H - 100, 160, 50)
-            if cont.contains(mx, my):
+            if cont.collidepoint(mx, my):
                 pl.next_level()
                 if pl.run_complete:
                     self.state = "gameover"

@@ -17,6 +17,12 @@ SDL_VIDEODRIVER=dummy python main.py  # headless validation (RDP-compatible)
 - Test evaluation: `engine.engine.card_system.calculate_score(board, pl.player, pl.get_multiplier())`.
 - conftest.py fully stubs pygame (`sys.modules['pygame']`). Never remove or bypass it.
 
+## Must-Know Fixes (Recurring Bugs)
+- `game/board.py`: Diagonal checks must cover both `PLAYER_X` and `OPPONENT_O`. Checking only one is incomplete.
+- `main.py:135`: `evaluate_and_settle()` must `return result`. Without it, callers get None.
+- `main.py:231`: `font.render()` requires `antialias=True` as second argument on Python 3.13.
+- `main.py:601`: Use `GameEngine`, not `Engine`. Old name was renamed.
+
 ## Architecture Notes
 - `main.py:22` — `GameEngine` is the top-level class. Entry point calls `GameEngine().run()`.
 - `game/player.py:21` — `RunState` holds grid size, score targets, level progression. Not a Player instance.

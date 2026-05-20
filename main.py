@@ -312,18 +312,19 @@ class GameEngine:
         elif self.state == "transition":
             lv = pl.level
             gs = pl.get_grid_size()
-            draw_big_centered_text(surf, f"Level {lv}", self.big_font, ACCENT_GOLD, 100)
-            draw_centered_text(surf, f"{gs}x{gs} Grid", self.font, TEXT_COLOR, 180)
+            draw_big_centered_text(surf, f"Level {lv}", self.big_font, ACCENT_GOLD, 150)
+            draw_centered_text(surf, f"{gs}x{gs} Grid", self.font, TEXT_COLOR, 240)
             pick_text = self.font.render("Choose a starting card:", True, TEXT_SUB)
-            surf.blit(pick_text, (SCREEN_W // 2 - pick_text.get_width() // 2, 280))
+            surf.blit(pick_text, (SCREEN_W // 2 - pick_text.get_width() // 2, 400))
 
-            sx = SCREEN_W // 2 - (3 * CARD_W) // 2
+            card_y = 460
+            sx = SCREEN_W // 2 - (3 * CARD_W + 2 * 12) // 2
             for i, name in enumerate(self.starter_cards):
                 card = get_by_name(name)
                 cx = sx + i * (CARD_W + 12)
                 draw_card(
                     surf, name, card.cost if card else 0, card.desc if card else "",
-                    cx, 320, CARD_W, CARD_H,
+                    cx, card_y, CARD_W, CARD_H,
                     is_highlighted=(self.hover_pos == f"starter:{i}"),
                     can_afford=True,
                 )
@@ -416,7 +417,7 @@ class GameEngine:
             # hand cards
             hand = pl.player.hand
             if hand:
-                sx = (SCREEN_W - len(hand) * CARD_W) // 2
+                sx = (SCREEN_W - (len(hand) * CARD_W + max(0, len(hand) - 1) * 12)) // 2
                 for i, name in enumerate(hand):
                     card = get_by_name(name)
                     cost_val = card.cost if card else 0
@@ -455,7 +456,7 @@ class GameEngine:
             draw_centered_text(surf, "SHOP", pygame.font.SysFont("consolas", 40), ACCENT_GOLD, 50)
             draw_tokens(surf, pl.player.tokens, SCREEN_W - 180, 80)
             if self.shop_cards:
-                sx = (SCREEN_W - len(self.shop_cards) * CARD_W) // 2
+                sx = (SCREEN_W - (len(self.shop_cards) * CARD_W + max(0, len(self.shop_cards) - 1) * 12)) // 2
                 for i, name in enumerate(self.shop_cards):
                     card = get_by_name(name)
                     cost_val = card.cost if card else 0
@@ -502,10 +503,11 @@ class GameEngine:
                 self.new_run()
 
         elif self.state == "transition":
-            sx = SCREEN_W // 2 - (3 * CARD_W) // 2
+            card_y = 460
+            sx = SCREEN_W // 2 - (3 * CARD_W + 2 * 12) // 2
             for i in range(len(self.starter_cards)):
                 cx = sx + i * (CARD_W + 12)
-                if cx <= mx <= cx + CARD_W and 320 <= my <= 320 + CARD_H:
+                if cx <= mx <= cx + CARD_W and card_y <= my <= card_y + CARD_H:
                     card_name = self.starter_cards[i]
                     card = get_by_name(card_name)
                     if card and pl.player.tokens >= card.cost:
@@ -584,7 +586,7 @@ class GameEngine:
             # check card click
             hand = pl.player.hand
             if hand and not self.showing_result and not self.player_placed_this_turn:
-                hx = (SCREEN_W - len(hand) * CARD_W) // 2
+                hx = (SCREEN_W - (len(hand) * CARD_W + max(0, len(hand) - 1) * 12)) // 2
                 for i, name in enumerate(hand):
                     if hx + i * (CARD_W + 12) <= mx <= hx + i * (CARD_W + 12) + CARD_W and (SCREEN_H - CARD_H - 40) <= my <= (SCREEN_H - 40):
                         card = get_by_name(name)
@@ -598,7 +600,7 @@ class GameEngine:
 
         elif self.state == "shop":
             if self.shop_cards:
-                sx = (SCREEN_W - len(self.shop_cards) * CARD_W) // 2
+                sx = (SCREEN_W - (len(self.shop_cards) * CARD_W + max(0, len(self.shop_cards) - 1) * 12)) // 2
                 for i, name in enumerate(self.shop_cards):
                     cx = sx + i * (CARD_W + 12)
                     cy = SCREEN_H // 2 - CARD_H // 2 - 20
@@ -634,7 +636,7 @@ class GameEngine:
             # check hand card hover
             hand = pl.player.hand
             if hand:
-                hx = (SCREEN_W - len(hand) * CARD_W) // 2
+                hx = (SCREEN_W - (len(hand) * CARD_W + max(0, len(hand) - 1) * 12)) // 2
                 for i, _ in enumerate(hand):
                     cx = hx + i * (CARD_W + 12)
                     if cx <= mx <= cx + CARD_W and (SCREEN_H - CARD_H - 40) <= my <= (SCREEN_H - 40):

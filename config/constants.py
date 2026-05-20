@@ -20,14 +20,15 @@ ACCENT_GOLD = (240, 192, 64)
 ACCENT_GREEN = (80, 220, 120)
 ACCENT_RED = (220, 70, 70)
 
-# card
-CARD_W, CARD_H = 160, 220
+# card — sized for the 720x1280 portrait canvas so they have real presence
+# on a phone instead of being squeezed into a small strip.
+CARD_W, CARD_H = 165, 360
 CARD_BG = (35, 35, 60)
 CARD_BORDER = (70, 70, 120)
 CARD_HIGHLIGHT = (100, 100, 180)
 CARD_GLYPH_SIZE = 60
 CARD_COST_SIZE = 36
-CARD_NAME_SIZE = 20
+CARD_NAME_SIZE = 22
 CARD_DESC_SIZE = 16
 
 # scores

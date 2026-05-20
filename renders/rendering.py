@@ -115,17 +115,17 @@ def draw_card(surface: pygame.Surface, card_name: str, card_cost: int, card_desc
     pygame.draw.rect(surface, border, (x, y, w, h), 2, border_radius=8)
 
     # cost circle (top-left)
-    cost_cx, cost_cy, cost_r = x + 20, y + 20, 14
+    cost_cx, cost_cy, cost_r = x + 24, y + 24, 18
     pygame.draw.circle(surface, ACCENT_GOLD, (cost_cx, cost_cy), cost_r)
-    cost_font = pygame.font.SysFont("consolas", 24)
+    cost_font = pygame.font.SysFont("consolas", 28)
     cost_surf = cost_font.render(str(card_cost), True, (0, 0, 0))
     surface.blit(cost_surf,
                  (cost_cx - cost_surf.get_width() // 2,
                   cost_cy - cost_surf.get_height() // 2))
 
-    pad = 8
+    pad = 10
     # name — wraps to up to 2 lines, first line clears the cost circle
-    name_font = pygame.font.SysFont("sans-serif", 18, bold=True)
+    name_font = pygame.font.SysFont("sans-serif", 22, bold=True)
     name_line_h = name_font.get_linesize()
     first_line_x = cost_cx + cost_r + 6  # right of the cost circle
     name_first_width = (x + w - pad) - first_line_x
@@ -165,7 +165,7 @@ def draw_card(surface: pygame.Surface, card_name: str, card_cost: int, card_desc
         name_bottom += 2 + name_line_h
 
     # description, fills remaining vertical space
-    desc_font = pygame.font.SysFont("sans-serif", 13)
+    desc_font = pygame.font.SysFont("sans-serif", 16)
     desc_line_h = desc_font.get_linesize()
     desc_y = name_bottom + 8
     available_h = (y + h - pad) - desc_y

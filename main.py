@@ -416,8 +416,12 @@ class GameEngine:
     def draw(self):
         surf = pygame.display.get_surface()
         surf.fill(BG_COLOR)
-        # Soft radial darken at the screen edges — one cached blit.
-        surf.blit(get_vignette(SCREEN_W, SCREEN_H), (0, 0))
+        # Soft radial darken at the screen edges — one cached blit. May
+        # return None on a runtime that can't render the SRCALPHA layer
+        # (e.g. some pygame-ce / WASM combinations); skip if so.
+        vignette = get_vignette(SCREEN_W, SCREEN_H)
+        if vignette is not None:
+            surf.blit(vignette, (0, 0))
 
         pl = self.engine.state
 
@@ -527,7 +531,8 @@ class GameEngine:
                 y = off_y + r * avail
                 pygame.draw.rect(surf, (28, 28, 48), (x, y, avail, avail), border_radius=4)
                 # 1-px top highlight / bottom shadow — cells feel pressed.
-                surf.blit(cell_shadow, (x, y))
+                if cell_shadow is not None:
+                    surf.blit(cell_shadow, (x, y))
 
                 # Empty poison cells get a green warning square even when
                 # nothing is placed yet, so the player can see the hazard.

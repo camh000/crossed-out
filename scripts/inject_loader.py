@@ -22,7 +22,11 @@ SENTINEL = "<!-- crossed-out:loader-injected -->"
 
 
 CSS = """\
-/* Crossed Out loading overlay — fades out once pygame begins drawing. */
+/* Crossed Out loading overlay — covers pygbag's default boot UI until
+   pygame actually starts drawing. Hide pygbag's transfer + infobox
+   panels so they don't bleed through. */
+#transfer, #infobox { display: none !important; }
+body { background: #07070f !important; }
 #cx-loader {
   position: fixed;
   inset: 0;
@@ -31,7 +35,8 @@ CSS = """\
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  z-index: 9999;
+  /* Above pygbag's #infobox (z-index 999999) and any canvas (z-index 5). */
+  z-index: 1000001;
   font-family: ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
   color: #f0c040;
   transition: opacity 600ms ease-out;
@@ -124,10 +129,18 @@ OVERLAY = """\
 """
 
 
-# Watches for either the pygame canvas to actually render something, or for
-# a long enough fallback timeout, then fades the overlay out. We can't rely
-# on a specific pygbag event because the runtime version may change; the
-# "canvas painted a non-empty frame" heuristic works across versions.
+# Hide the overlay once pygame has actually started drawing. We can't trust
+# `canvas.getBoundingClientRect()` because pygbag's default CSS gives both
+# canvases 100% width from the start — so any naive "canvas has size" check
+# returns true on frame zero and the overlay would vanish before the player
+# saw it. Instead we look at three converging signals:
+#   1. pygbag boots and hides its #infobox once the WASM bundle finishes
+#      installing and main.py starts running.
+#   2. pygame.display.set_mode rewrites the canvas `width` attribute from
+#      pygbag's seed value (1px) to the game's actual width (720). We wait
+#      until canvas.width is well above the seed.
+#   3. As a last resort, 30 s timeout so the player isn't stuck behind the
+#      splash if the runtime layout changes in a future pygbag release.
 SCRIPT = """\
 <script>
 (function () {
@@ -142,34 +155,38 @@ SCRIPT = """\
       if (loader.parentNode) loader.parentNode.removeChild(loader);
     }, 700);
   }
-  function canvasHasPaint() {
-    // Pygbag creates a <canvas>. Wait until it's sized AND has at least one
-    // non-zero pixel — that's the first frame pygame drew.
-    var c = document.querySelector('canvas');
-    if (!c || c.width === 0 || c.height === 0) return false;
-    try {
-      var ctx = c.getContext('webgl2') || c.getContext('webgl') || c.getContext('2d');
-      // We can't read pixels from a WebGL canvas without preserveDrawingBuffer.
-      // Fall back to "canvas has non-zero CSS size and existed for >300ms".
-      if (!ctx || !ctx.getImageData) {
-        return c.getBoundingClientRect().width > 0;
+  function gameReady() {
+    // Signal 1: pygbag's infobox is hidden — it sets display:none once
+    // python's main.py starts (see custom_site() in pygbag's default.tmpl).
+    var ib = document.getElementById('infobox');
+    if (ib) {
+      var ibStyle = window.getComputedStyle(ib);
+      if (ibStyle && ibStyle.display === 'none' && ib.style.display !== 'none') {
+        // Style display is "none" via computed style (our CSS forces it)
+        // but the inline style hasn't been set by pygbag yet. Don't trust.
+      } else if (ib.style.display === 'none') {
+        return true;
       }
-      // Sample a tiny strip from the centre of the canvas.
-      var data = ctx.getImageData(c.width >> 1, c.height >> 1, 1, 1).data;
-      return data[0] + data[1] + data[2] > 0;
-    } catch (e) {
-      return c.getBoundingClientRect().width > 0;
     }
+    // Signal 2: pygame.display.set_mode resizes the canvas. The seed
+    // canvas starts at width="1px"; when pygame paints, it becomes the
+    // game width (720). Check every canvas — the actual pygame target
+    // may be either #canvas or #canvas3d depending on the SDL2 driver.
+    var canvases = document.getElementsByTagName('canvas');
+    for (var i = 0; i < canvases.length; i++) {
+      var c = canvases[i];
+      // Native canvas width — not CSS width. The intrinsic attribute is
+      // what pygame writes via set_mode.
+      if (c.width >= 100) return true;
+    }
+    return false;
   }
   var start = Date.now();
   function tick() {
-    if (canvasHasPaint()) { hide(); return; }
-    // Safety net: hide after 30s no matter what so the player isn't stuck
-    // behind the overlay if the readiness probe fails.
+    if (gameReady()) { hide(); return; }
     if (Date.now() - start > 30000) { hide(); return; }
     requestAnimationFrame(tick);
   }
-  // Defer one frame so pygbag has a chance to insert its canvas first.
   requestAnimationFrame(function () { requestAnimationFrame(tick); });
 })();
 </script>

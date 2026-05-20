@@ -33,10 +33,15 @@ class RunState:
     games_per_level: int = 2
     total_score: int = 0
     score_this_level: int = 0
-    # Per-level ink targets — the level 3 → 4 win check uses these.
-    score_targets: list[int] = field(default_factory=lambda: [50, 200, 800])
-    # Per-boss ante targets — failing the boss ante ends the run.
-    ante_targets: list[int] = field(default_factory=lambda: [50, 200, 800])
+    # Per-level cumulative ink targets — the run-end win check on level 3
+    # uses these. main.py overrides these to gameplay-tuned values during
+    # the starter-card screen.
+    score_targets: list[int] = field(default_factory=lambda: [6, 12, 20])
+    # Per-boss ante targets — failing the boss ante ends the run. Tuned so
+    # that 1-2 X lines + a couple of buff stacks comfortably hits the
+    # level's ante: base ink ranges roughly 3..10 (lvl1), 5..25 (lvl2),
+    # 7..50 (lvl3) before multipliers.
+    ante_targets: list[int] = field(default_factory=lambda: [8, 30, 100])
     current_target: int = 0
     ante_target: int = 0
     is_boss: bool = False
@@ -74,17 +79,21 @@ class RunState:
         return [1, 2, 3][min(self.level - 1, 2)]
 
     def next_level(self) -> bool:
+        # Decide pass/fail BEFORE advancing — get_target() depends on
+        # self.level, and we want to score the level we just finished, not
+        # the one we're about to enter.
+        completed_target = self.get_target()
+        passed = self.score_this_level >= completed_target
         self.level += 1
         self.games_in_level = 0
         self.is_boss = False
+        self.current_boss = None
         self.shop_phase = True
+        # Per-level counters reset so the next level scores from zero.
+        self.score_this_level = 0
         if self.level > 3:
-            if self.score_this_level >= self.get_target():
-                self.run_complete = True
-                self.won_run = True
-            else:
-                self.run_complete = True
-                self.won_run = False
+            self.run_complete = True
+            self.won_run = passed
             return False
         return True
 

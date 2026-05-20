@@ -68,6 +68,40 @@ class Board:
         self.weights = [[1] * self.size for _ in range(self.size)]
         self.swap_counter = 0
 
+    def clear_marks(self):
+        """Wipe placed marks and per-game state but preserve the current
+        bounding box and valid-cells set, so growth gained from a draw in
+        a prior game carries into the next game."""
+        self.grid = [[EMPTY] * self.cols for _ in range(self.rows)]
+        self.wall_cells = []
+        self.poison_cells = []
+        self.poisoned_marks = []
+        self.locked_cells = []
+        self.move_count = 0
+        self.game_over = False
+        self.weights = [[1] * self.cols for _ in range(self.rows)]
+        self.swap_counter = 0
+
+    def advance_to_size(self, new_size: int) -> None:
+        """Bump the line-length target to `new_size` and expand the
+        bounding box (rightward and downward) until it covers at least
+        new_size rows and cols. Existing growth is preserved — if the
+        board is already bigger than new_size on an axis, that axis is
+        left alone. Marks are wiped via clear_marks()."""
+        self.size = new_size
+        while self.cols < new_size:
+            new_col_idx = self.cols  # index of the column we're about to add
+            for row in self.grid:
+                row.append(EMPTY)
+            for r in range(self.rows):
+                self.valid_cells.add((r, new_col_idx))
+        while self.rows < new_size:
+            new_row_idx = self.rows
+            self.grid.append([EMPTY] * self.cols)
+            for c in range(self.cols):
+                self.valid_cells.add((new_row_idx, c))
+        self.clear_marks()
+
     def place_at(self, r: int, c: int, val: int) -> bool:
         if self.game_over:
             return False

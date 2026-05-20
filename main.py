@@ -58,6 +58,9 @@ class GameEngine:
 
     def new_run(self):
         self.engine.start_new_run()
+        # Fresh board for a fresh run — without this, growth from the
+        # previous run would carry over into the new one's first game.
+        self.board.reset(self.engine.state.get_grid_size())
         pl = self.engine.state.player
         pl.deck = self.card_system.generate_deck()
         unlocked = get_unlocked_cards()
@@ -70,7 +73,11 @@ class GameEngine:
         pl = self.engine.state
         pl.games_in_level += 1
         gs = pl.get_grid_size()
-        self.board.reset(gs)
+        # Growth carries across both games AND levels. The line-length
+        # target advances with the level (3 → 5 → 7), and the bounding
+        # box expands rightward/downward if the player hadn't already
+        # grown past the new base size. The board never shrinks.
+        self.board.advance_to_size(gs)
         pl.current_target = pl.get_target()
         # Per-game scratch resets.
         pl.player.score = 0
@@ -79,6 +86,7 @@ class GameEngine:
         pl.last_ink = 0
         pl.last_mult = 1.0
         pl.player.blind_shot_marks = []
+        pl.player.cells_played = []
         pl.game_result = None
         # Re-apply the player's persistent buff stack into upgrades so
         # buff cards bought across runs feed into score_breakdown.
@@ -103,8 +111,6 @@ class GameEngine:
                 self.board.weights = self.board.get_weights()
             if boss.mechanic == "timed":
                 self.countdown_start = pygame.time.get_ticks()
-            if pl.is_boss:
-                pl.current_boss_setup = boss.mechanic
             if boss.mechanic == "swap":
                 self.board.swap_counter = 0
 
@@ -113,6 +119,8 @@ class GameEngine:
         else:
             pl.ante_target = 0
             pl.is_boss = False
+            pl.current_boss = None
+            self.engine.current_boss_mechanic = None
             pl.shop_phase = False
             self.state = "countdown"
             self.countdown_start = pygame.time.get_ticks()
@@ -396,10 +404,28 @@ class GameEngine:
             draw_tokens(surf, pl.player.tokens, SCREEN_W - 200, 30)
             lv_txt = self.font.render(f"Level {pl.level}", True, TEXT_COLOR)
             surf.blit(lv_txt, (20, 10))
-            # Lives — small hearts in the centre of the top bar.
-            hearts = "♥" * pl.lives + "♡" * max(0, pl.max_lives - pl.lives)
-            hearts_surf = pygame.font.SysFont("consolas", 28).render(hearts, True, ACCENT_RED)
-            surf.blit(hearts_surf, (SCREEN_W // 2 - hearts_surf.get_width() // 2, 20))
+            # Lives — text + pip row in the centre of the top bar. Unicode
+            # heart glyphs render inconsistently in the browser, so use a
+            # plain "Lives: N" label with filled circles for clarity.
+            lives_label = pygame.font.SysFont("sans-serif", 22).render(
+                f"Lives: {pl.lives}/{pl.max_lives}", True, TEXT_COLOR,
+            )
+            label_w = lives_label.get_width()
+            pip_r = 8
+            pip_gap = 6
+            pips_w = pl.max_lives * (pip_r * 2) + (pl.max_lives - 1) * pip_gap
+            total_w = label_w + 10 + pips_w
+            block_x = SCREEN_W // 2 - total_w // 2
+            surf.blit(lives_label, (block_x, 14))
+            pips_x = block_x + label_w + 10
+            for i in range(pl.max_lives):
+                cx = pips_x + pip_r + i * (pip_r * 2 + pip_gap)
+                cy = 14 + lives_label.get_height() // 2
+                if i < pl.lives:
+                    pygame.draw.circle(surf, ACCENT_RED, (cx, cy), pip_r)
+                else:
+                    pygame.draw.circle(surf, (60, 60, 80), (cx, cy), pip_r)
+                    pygame.draw.circle(surf, ACCENT_RED, (cx, cy), pip_r, 2)
             if pl.current_boss:
                 boss_txt = self.font.render(f"BOSS: {pl.current_boss.name}", True, ACCENT_RED)
                 surf.blit(boss_txt, (SCREEN_W - 10 - boss_txt.get_width(), 60))
@@ -411,28 +437,24 @@ class GameEngine:
                     surf.blit(ante_txt, (SCREEN_W - 10 - ante_txt.get_width(), 85))
 
             # timed boss countdown
-            if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "timed" and self.countdown_start:
+            if (
+                pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "timed"
+                and self.countdown_start and not self.board.game_over
+                and not self.showing_result
+            ):
                 elapsed = (pygame.time.get_ticks() - self.countdown_start) / 1000
                 remaining = 5 - elapsed
-                if remaining > 0 and not self.board.game_over:
+                if remaining > 0:
                     ts = pygame.font.SysFont("consolas", 48).render(f"{remaining:.0f}", True, ACCENT_RED)
-                    surf.blit(ts, (SCREEN_W // 2 - ts.get_width() // 2, SCREEN_H // 2 - 100))
-                    if remaining <= 0:
-                        # auto opponent move
-                        ai = OpponentAI(self.board)
-                        move = ai.get_best_move()
-                        if move:
-                            self.board.place_at(move[0], move[1], OPPONENT_O)
-                            self.countdown_start = pygame.time.get_ticks()
-            if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "timed":
-                # restart countdown for timed boss after each move
-                pass
-
-            # swap boss tick
-            if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "swap":
-                if self.board.move_count > 0 and self.board.move_count % 3 == 0:
-                    self.board.apply_swap()
-
+                    surf.blit(ts, (SCREEN_W // 2 - ts.get_width() // 2, 60))
+                else:
+                    ai = OpponentAI(self.board)
+                    move = ai.get_best_move()
+                    if move:
+                        self.board.place_at(move[0], move[1], OPPONENT_O)
+                    self.countdown_start = pygame.time.get_ticks()
+                    if self._should_evaluate():
+                        self.evaluate_and_settle()
             # hand cards
             hand = pl.player.hand
             if hand:
@@ -458,29 +480,48 @@ class GameEngine:
                 sub = self.font.render(f"Win reward reduced by {penalty_pct}%", True, TEXT_SUB)
                 surf.blit(sub, (SCREEN_W // 2 - sub.get_width() // 2, 70))
 
-            # result overlay (win/lose only — draws keep the game going)
+            # result panel (win/lose only — draws keep the game going).
+            # Sits in the gap between the board and the hand cards so it
+            # never overlaps placed marks.
             if self.showing_result:
                 result = pl.game_result
                 txt_map = {"win": ("VICTORY!", ACCENT_GREEN), "lose": ("DEFEAT!", ACCENT_RED)}
                 if result in txt_map:
                     txt, col = txt_map[result]
-                    cy = SCREEN_H // 2
-                    ts = pygame.font.SysFont("consolas", 64).render(txt, True, col)
-                    surf.blit(ts, (SCREEN_W // 2 - ts.get_width() // 2, cy - 100))
-                    # Ink × Mult breakdown — this is the run-away feedback.
-                    ink_mult_text = f"Ink {pl.last_ink}  ×  Mult {pl.last_mult:g}"
-                    bd = pygame.font.SysFont("consolas", 28).render(ink_mult_text, True, ACCENT_GOLD)
-                    surf.blit(bd, (SCREEN_W // 2 - bd.get_width() // 2, cy - 20))
-                    score_txt = self.font.render(f"Score this game: {pl.score_this_game}", True, TEXT_COLOR)
-                    surf.blit(score_txt, (SCREEN_W // 2 - score_txt.get_width() // 2, cy + 20))
+                    board_bottom = off_y + self.board.rows * avail
+                    cards_top = SCREEN_H - CARD_H - 40
+                    panel_top = board_bottom + 12
+                    panel_h = max(120, cards_top - panel_top - 12)
+                    panel_w = SCREEN_W - 40
+                    panel_x = (SCREEN_W - panel_w) // 2
+                    pygame.draw.rect(
+                        surf, (12, 12, 24), (panel_x, panel_top, panel_w, panel_h),
+                        border_radius=10,
+                    )
+                    pygame.draw.rect(
+                        surf, col, (panel_x, panel_top, panel_w, panel_h), 2,
+                        border_radius=10,
+                    )
+                    title_font = pygame.font.SysFont("consolas", 40)
+                    ts = title_font.render(txt, True, col)
+                    surf.blit(ts, (SCREEN_W // 2 - ts.get_width() // 2, panel_top + 8))
+                    ink_mult_text = f"Ink {pl.last_ink}  ×  Mult {pl.last_mult:g}  =  {pl.score_this_game}"
+                    bd = pygame.font.SysFont("consolas", 22).render(ink_mult_text, True, ACCENT_GOLD)
+                    surf.blit(bd, (SCREEN_W // 2 - bd.get_width() // 2, panel_top + 58))
                     if self._pending_run_end:
-                        end_txt = self.font.render(
-                            "Run failed — click to return to menu", True, ACCENT_RED,
+                        reason = (
+                            "Failed boss ante" if pl.is_boss and pl.score_this_game < pl.ante_target
+                            else "Out of lives"
                         )
-                        surf.blit(end_txt, (SCREEN_W // 2 - end_txt.get_width() // 2, cy + 60))
+                        rs = self.font.render(reason, True, ACCENT_RED)
+                        surf.blit(rs, (SCREEN_W // 2 - rs.get_width() // 2, panel_top + 88))
+                        end_txt = self.font.render(
+                            "Run failed — click to return to menu", True, TEXT_SUB,
+                        )
+                        surf.blit(end_txt, (SCREEN_W // 2 - end_txt.get_width() // 2, panel_top + panel_h - 28))
                     else:
                         cont = self.font.render("Click to continue", True, TEXT_SUB)
-                        surf.blit(cont, (SCREEN_W // 2 - cont.get_width() // 2, cy + 60))
+                        surf.blit(cont, (SCREEN_W // 2 - cont.get_width() // 2, panel_top + panel_h - 28))
 
         elif self.state == "shop":
             draw_centered_text(surf, "SHOP", pygame.font.SysFont("consolas", 40), ACCENT_GOLD, 50)
@@ -540,14 +581,9 @@ class GameEngine:
                 if cx <= mx <= cx + CARD_W and card_y <= my <= card_y + CARD_H:
                     card_name = self.starter_cards[i]
                     card = get_by_name(card_name)
-                    if card and pl.player.tokens >= card.cost:
-                        pl.current_target = pl.get_target()
-                        pl.score_targets = [6, 12, 20]
-                        pl.player.hand.append(card_name)
-                        if card.cost > 0:
-                            pl.player.tokens -= card.cost
-                    else:
-                        pl.player.hand.append(card_name)
+                    pl.player.hand.append(card_name)
+                    if card and pl.player.tokens >= card.cost and card.cost > 0:
+                        pl.player.tokens -= card.cost
                     break
             self.start_game()
 

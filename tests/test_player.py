@@ -43,8 +43,8 @@ class TestRunState:
         assert rs.games_per_level == 2
         assert rs.total_score == 0
         assert rs.score_this_level == 0
-        assert rs.score_targets == [50, 200, 800]
-        assert rs.ante_targets == [50, 200, 800]
+        assert rs.score_targets == [6, 12, 20]
+        assert rs.ante_targets == [8, 30, 100]
         assert rs.current_target == 0
         assert rs.ante_target == 0
         assert rs.is_boss is False
@@ -75,26 +75,26 @@ class TestRunState:
 
     def test_get_target_level_1(self):
         rs = RunState(level=1)
-        assert rs.get_target() == 50
+        assert rs.get_target() == 6
 
     def test_get_target_level_2(self):
         rs = RunState(level=2)
-        assert rs.get_target() == 200
+        assert rs.get_target() == 12
 
     def test_get_target_level_3(self):
         rs = RunState(level=3)
-        assert rs.get_target() == 800
+        assert rs.get_target() == 20
 
     def test_get_target_level_4_clamped(self):
         rs = RunState(level=4)
-        assert rs.get_target() == 800
+        assert rs.get_target() == 20
 
     def test_get_ante_target_levels(self):
-        assert RunState(level=1).get_ante_target() == 50
-        assert RunState(level=2).get_ante_target() == 200
-        assert RunState(level=3).get_ante_target() == 800
+        assert RunState(level=1).get_ante_target() == 8
+        assert RunState(level=2).get_ante_target() == 30
+        assert RunState(level=3).get_ante_target() == 100
         # Beyond level 3 clamps to the last ante.
-        assert RunState(level=4).get_ante_target() == 800
+        assert RunState(level=4).get_ante_target() == 100
 
     def test_get_multiplier_level_1(self):
         rs = RunState(level=1)

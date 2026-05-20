@@ -770,3 +770,289 @@ class TestFinishRun:
         data = json.loads(save_path.read_text())
         assert data["tokens_banked"] == 0
         assert data["won_run"] is False
+
+
+class TestBossBannerClears:
+    """After a boss game finishes, the next non-boss start_game must clear
+    `current_boss` so the BOSS label and ante row don't leak into the next
+    level's games."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_non_boss_start_game_clears_boss(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        # Simulate having just finished a boss: current_boss set, games_in_level
+        # at 3 (the boss was game 3), then next_level + start_game for the
+        # first non-boss game of the next level.
+        pl.games_in_level = 3
+        from config.bosses import BOSS_MAP
+        pl.current_boss = BOSS_MAP["blind"]
+        pl.is_boss = True
+        pl.next_level()  # → level 2, games_in_level=0
+        engine.start_game()  # → game 1 of level 2, non-boss
+        assert pl.is_boss is False
+        assert pl.current_boss is None
+        assert pl.ante_target == 0
+
+
+class TestTimedBossAutoMoveTriggers:
+    """Reachable timeout: once the per-move timer hits 0, the AI moves and
+    the countdown resets. Previously the auto-move was nested inside
+    `if remaining > 0` so it never fired."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_timeout_block_is_reachable(self, mock_caption, mock_mode, mock_init):
+        """Source-level pin: the auto-move branch must not be nested inside
+        the 'remaining > 0' check that originally hid it."""
+        import re, inspect
+        from main import GameEngine
+        src = inspect.getsource(GameEngine.draw)
+        # Find the timed-boss section and confirm the auto-move sits under
+        # the timeout branch, not the 'remaining > 0' branch.
+        m = re.search(r'mechanic == "timed".*?# hand cards', src, re.DOTALL)
+        assert m, "could not locate timed-boss block in GameEngine.draw"
+        block = m.group(0)
+        # The OpponentAI call should appear after an `else:` (the timeout
+        # branch), not inside `if remaining > 0:`.
+        assert "OpponentAI" in block
+        # Order matters: the `else:` must precede `OpponentAI` and there
+        # must be no `if remaining <= 0:` inside `if remaining > 0:` block.
+        assert "if remaining <= 0:" not in block, (
+            "unreachable timeout branch still present"
+        )
+
+
+class TestSwapBossDoesNotDoubleApply:
+    """`apply_swap` used to run every frame from draw() in addition to once
+    per third click — net effect was an oscillating board. The frame-loop
+    swap has been removed; only the click-driven swap remains."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_draw_does_not_call_apply_swap(self, mock_caption, mock_mode, mock_init):
+        import inspect
+        from main import GameEngine
+        src = inspect.getsource(GameEngine.draw)
+        # The only swap call inside draw() should be gone — the move-driven
+        # one lives in handle_click. (handle_click is a separate method.)
+        assert "apply_swap" not in src, (
+            "draw() should not call apply_swap — that caused a per-frame oscillation"
+        )
+
+
+class TestLevelScoreResets:
+    """score_this_level used to grow cumulatively across the whole run.
+    next_level() now resets it so each level scores from zero."""
+
+    def test_next_level_resets_level_score(self):
+        from game.player import RunState
+        rs = RunState(level=1)
+        rs.score_this_level = 25
+        rs.next_level()
+        assert rs.score_this_level == 0
+        assert rs.level == 2
+
+    def test_level3_win_check_uses_pre_increment_target(self):
+        """Beating level 3 with cumulative ink ≥ that level's target should
+        register as a run win. The check must happen BEFORE level += 1, or
+        get_target() would compare against the clamped final value."""
+        from game.player import RunState
+        rs = RunState(level=3)
+        rs.score_this_level = rs.get_target()  # exactly hit
+        rs.next_level()
+        assert rs.run_complete is True
+        assert rs.won_run is True
+
+    def test_level3_miss_check_fails_run(self):
+        from game.player import RunState
+        rs = RunState(level=3)
+        rs.score_this_level = rs.get_target() - 1
+        rs.next_level()
+        assert rs.run_complete is True
+        assert rs.won_run is False
+
+
+class TestCellLockOnGrownBoard:
+    """Cell Lock used to drop the wall at (board.size//2, board.size//2),
+    which is wrong once the board has grown via draws — that coordinate
+    may no longer be a valid cell. It now picks the geometric centre of
+    the playable region."""
+
+    def test_lock_centre_of_grown_board_lands_on_valid_cell(self):
+        import random
+        from systems.cardsystem import CardSystem
+        from game.board import Board
+        from game.player import Player
+        random.seed(0)
+        board = Board()
+        # Grow 3 times so the bounding box has shifted off (1,1).
+        for _ in range(3):
+            board.grow_row_and_column()
+        cs = CardSystem()
+        assert cs.apply_card("Cell Lock", board, Player()) is True
+        assert len(board.wall_cells) == 1
+        assert board.wall_cells[0] in board.valid_cells
+
+
+class TestFortressRandomPlacement:
+    """Fortress now picks a random empty cell, not sorted[0]."""
+
+    def test_fortress_visits_multiple_cells_over_trials(self):
+        import random
+        from systems.cardsystem import CardSystem
+        from game.board import Board
+        from game.player import Player
+        cs = CardSystem()
+        placements = set()
+        # Use 5x5 so there's room for variance — sorted[0] would always be (0,0).
+        for seed in range(64):
+            random.seed(seed)
+            board = Board(size=5)
+            cs.apply_card("Fortress", board, Player())
+            placements.update(board.wall_cells)
+        # If still picking sorted[0] every time, we'd only ever see (0, 0).
+        assert len(placements) > 1
+
+
+class TestGrowthPersistsWithinLevel:
+    """A board that grew during a draw should keep that growth in the next
+    game within the same level (only a level transition restores the base
+    grid size)."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_growth_carries_to_next_game_same_level(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        engine.start_game()  # game 1 of level 1 → 3x3
+        assert engine.board.rows == 3
+        assert engine.board.cols == 3
+        # Simulate a draw growing the board mid-game.
+        engine.board.grow_row_and_column()
+        assert engine.board.rows == 4
+        assert engine.board.cols == 4
+        # Next game in the same level should preserve the 4x4 bounding box.
+        engine.start_game()
+        assert pl.games_in_level == 2
+        assert engine.board.rows == 4
+        assert engine.board.cols == 4
+        # But the marks must be wiped.
+        assert all(engine.board.grid[r][c] == 0 for r in range(4) for c in range(4))
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_growth_carries_across_level_transition(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """Growth survives a level change too: the new level's base only
+        expands the board further; it never shrinks it."""
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        engine.start_game()  # level 1, 3x3
+        # Grow level 1 board to 6x6 across several "draw" expansions.
+        engine.board.grow_row_and_column()
+        engine.board.grow_row_and_column()
+        engine.board.grow_row_and_column()
+        assert engine.board.rows == 6 and engine.board.cols == 6
+        # Advance to level 2 (base 5). Player kept the 6x6.
+        pl.next_level()
+        engine.start_game()
+        assert pl.level == 2
+        assert engine.board.size == 5  # line-length target updated
+        assert engine.board.rows == 6  # bounding box preserved
+        assert engine.board.cols == 6
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_level_transition_expands_when_growth_below_base(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """If the board hasn't grown past the new level's base size, it
+        gets expanded out to that base."""
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        engine.start_game()  # 3x3
+        engine.board.grow_row_and_column()  # 4x4
+        pl.next_level()
+        engine.start_game()
+        # 4x4 was below the level-2 base (5) → expanded to 5x5.
+        assert engine.board.rows == 5
+        assert engine.board.cols == 5
+        assert engine.board.size == 5
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_new_run_resets_board(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """A fresh run starts on a fresh 3x3, even if the previous run
+        ended with a larger grown board."""
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        engine.start_game()
+        for _ in range(4):
+            engine.board.grow_row_and_column()
+        assert engine.board.rows > 3
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        assert engine.board.rows == 3
+        assert engine.board.cols == 3
+
+    def test_clear_marks_preserves_box_but_wipes_grid(self):
+        from game.board import Board, PLAYER_X, OPPONENT_O
+        b = Board()
+        b.grow_row_and_column()
+        b.grow_row_and_column()  # 5x5
+        b.place_at(1, 1, PLAYER_X)
+        b.place_at(2, 2, OPPONENT_O)
+        b.wall_cells.append((0, 0))
+        b.poison_cells.append((3, 3))
+        b.move_count = 2
+        b.game_over = True
+        b.clear_marks()
+        assert b.rows == 5
+        assert b.cols == 5
+        assert len(b.valid_cells) == 25
+        assert all(b.grid[r][c] == 0 for r in range(5) for c in range(5))
+        assert b.wall_cells == []
+        assert b.poison_cells == []
+        assert b.move_count == 0
+        assert b.game_over is False
+
+
+class TestRunFailedReason:
+    """The result panel surfaces WHY the run ended (lives vs ante), not
+    just a bare 'Run failed'."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_pending_run_end_is_distinguishable_from_continue(self, mock_caption, mock_mode, mock_init):
+        import inspect
+        from main import GameEngine
+        src = inspect.getsource(GameEngine.draw)
+        # The two failure modes must appear as branches in the result panel.
+        assert "Failed boss ante" in src
+        assert "Out of lives" in src

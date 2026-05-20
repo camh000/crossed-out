@@ -70,6 +70,9 @@ class GameEngine:
         # Per-game score resets so the win check stays per-game; the
         # per-level total lives on score_this_level.
         pl.player.score = 0
+        # Top the player's hand up from their deck so they always have
+        # cards to play this game.
+        self.card_system.draw_hand(pl.player)
 
         # every 3rd game is a boss
         if pl.games_in_level % 3 == 0:

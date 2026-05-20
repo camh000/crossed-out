@@ -1,5 +1,7 @@
 # colors
-SCREEN_W, SCREEN_H = 1100, 800
+# Portrait 9:16 — matches the dominant mobile aspect ratio so the game
+# fills an iPhone in portrait orientation without letterboxing.
+SCREEN_W, SCREEN_H = 720, 1280
 BG_COLOR = (20, 20, 35)
 GRID_LINE_COLOR = (30, 30, 50)
 BG_ACCENT = (25, 25, 45)

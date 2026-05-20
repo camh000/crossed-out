@@ -19,14 +19,13 @@ class CardSystem:
         return deck
 
     def draw_hand(self, player: Player) -> list[str]:
-        """Draw cards from deck into hand."""
-        if not player.hand:
-            for _ in range(self.hand_size + player.upgrades.get("extra_card_start", 0)):
-                if player.deck:
-                    player.hand.append(player.deck.pop(0))
-                else:
-                    player.deck = self.generate_deck()
-                    player.hand.append(player.deck.pop(0))
+        """Top up the hand to hand_size (+ any extra_card_start upgrade),
+        drawing from the deck and reshuffling a fresh deck if it empties."""
+        target = self.hand_size + player.upgrades.get("extra_card_start", 0)
+        while len(player.hand) < target:
+            if not player.deck:
+                player.deck = self.generate_deck()
+            player.hand.append(player.deck.pop(0))
         return player.hand
 
     def can_play_card(self, player: Player, cost: int) -> bool:

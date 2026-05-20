@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "python3 -m pygbag --build main.py",
+  "buildCommand": "python3 -m pygbag --build --app_name crossed-out --title \"Crossed Out\" main.py",
   "outputDirectory": "build/web",
   "framework": null,
   "headers": [

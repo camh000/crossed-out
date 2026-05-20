@@ -1,3 +1,4 @@
+import asyncio
 import pygame
 import random
 from game.board import Board, PLAYER_X, OPPONENT_O
@@ -632,7 +633,9 @@ class GameEngine:
                     if cx <= mx <= cx + CARD_W and (SCREEN_H - CARD_H - 40) <= my <= (SCREEN_H - 40):
                         self.hover_pos = f"card:{i}"
 
-    def run(self):
+    async def run(self):
+        # Async so the browser event loop can yield each frame under
+        # pygbag/WebAssembly. On desktop, asyncio.run drives it identically.
         while True:
             for ev in pygame.event.get():
                 if ev.type == pygame.QUIT:
@@ -645,11 +648,12 @@ class GameEngine:
 
             self.draw()
             self.clock.tick(60)
+            await asyncio.sleep(0)
 
 
-def main():
-    GameEngine().run()
+async def main():
+    await GameEngine().run()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

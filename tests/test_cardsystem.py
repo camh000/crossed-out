@@ -48,6 +48,66 @@ class TestApplyPassiveBuffs:
         assert player.upgrades["skip_opponent"] == 0
 
 
+class TestLineContributions:
+    """Per-line breakdown used by the result panel to colour-code each
+    completed line on the board with a +N / -N label."""
+
+    def test_x_line_positive_contribution(self):
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        contribs = cs.line_contributions(board, player)
+        assert len(contribs) == 1
+        c = contribs[0]
+        assert c["side"] == "X"
+        assert c["contribution"] > 0
+        assert tuple(c["cells"]) == ((0, 0), (0, 1), (0, 2))
+
+    def test_o_line_subtracts_by_default(self):
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.grid[2] = [OPPONENT_O, OPPONENT_O, OPPONENT_O]
+        contribs = cs.line_contributions(board, player)
+        assert len(contribs) == 1
+        c = contribs[0]
+        assert c["side"] == "O"
+        assert c["contribution"] < 0
+
+    def test_doublecross_o_line_becomes_positive(self):
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.grid[2] = [OPPONENT_O, OPPONENT_O, OPPONENT_O]
+        contribs = cs.line_contributions(
+            board, player, is_boss=True, boss_mechanic="doublecross",
+        )
+        assert contribs[0]["contribution"] > 0
+
+    def test_point_mult_appears_in_modifiers(self):
+        cs = CardSystem()
+        player = Player(upgrades={"point_mult": 2})
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        contribs = cs.line_contributions(board, player)
+        labels = [m[0] for m in contribs[0]["modifiers"]]
+        assert any("Point Mult" in label for label in labels)
+
+    def test_blind_shot_doubles_line_when_intersecting(self):
+        cs = CardSystem()
+        player = Player()
+        player.blind_shot_marks = [(0, 0)]
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        contribs = cs.line_contributions(board, player)
+        labels = [m[0] for m in contribs[0]["modifiers"]]
+        assert any("Blind Shot" in label for label in labels)
+        # Base ink for a 3-cell line is weight_sum × length = 3 × 3 = 9.
+        # Blind Shot doubles it → 18.
+        assert contribs[0]["contribution"] == 18
+
+
 class TestPostGameCleanup:
     def test_persistent_buffs_survive(self):
         cs = CardSystem()

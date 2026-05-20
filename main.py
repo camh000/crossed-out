@@ -289,6 +289,14 @@ class GameEngine:
         # game total so the score count-up animates from 0 to the value
         # contributed by this round (not the cumulative).
         pl.last_total = total
+        # Per-line contribution breakdown for the result panel — colour-
+        # codes each completed line on the board with a "+N" or "-N" so
+        # the player sees exactly where the score came from.
+        pl.last_line_contributions = self.card_system.line_contributions(
+            self.board, pl.player,
+            is_boss=is_boss,
+            boss_mechanic=pl.current_boss.mechanic if pl.current_boss else None,
+        )
         pl.score_this_game += total
         pl.player.score += total
         pl.total_score += total
@@ -372,10 +380,13 @@ class GameEngine:
         self._result_anim_start = pygame.time.get_ticks()
         self.animator.start("result_panel", 400)
 
-        # Highlight every X line that's now on the board with a pulsing
-        # gold streak (rendered in the cell loop).
-        for line in x_lines_for_triggers:
-            line_id = "line_glow:" + "-".join(f"{r},{c}" for r, c in line)
+        # Highlight every completed line on the board with a coloured
+        # streak — gold for your X lines, red for the AI's O lines. The
+        # animation id encodes the side so the renderer can pick the
+        # right colour without re-scanning the board.
+        for contrib in pl.last_line_contributions:
+            cells_str = "-".join(f"{r},{c}" for r, c in contrib["cells"])
+            line_id = f"line_glow:{contrib['side']}:{cells_str}"
             self.animator.start(line_id, 800)
 
         # Run-ending failure modes — ante failure on a boss, or zero lives.
@@ -626,27 +637,34 @@ class GameEngine:
                         (x, y, avail, avail), 2, border_radius=4,
                     )
 
-            # Line glow pass — draws a gold streak through each X line
-            # the player just completed. The colour modulates between
-            # gold and background as the animation eases out, so the
-            # line "pulses" before settling. Cheaper than alpha blits.
+            # Line glow pass — pulses a coloured streak through every
+            # completed line. Gold for your X lines (positive ink), red
+            # for the AI's O lines (negative ink, unless Double Cross is
+            # active in which case both score). Eases out so it 'fires'
+            # then settles — same animation backs the line streaks
+            # drawn during the result panel.
             for anim_id in list(self.animator.entries):
                 if not anim_id.startswith("line_glow:"):
                     continue
                 t = self.animator.eased(anim_id)
                 if t >= 1.0:
                     continue
-                # 1.0 - t inverted curve: bright at the start, fades out.
                 bright = 1.0 - t
+                # IDs use the form `line_glow:X:r,c-r,c-r,c`.
+                _, side, cells_str = anim_id.split(":", 2)
+                # Per-side target colour. X = gold; O = red.
+                if side == "X":
+                    target = (255, 200, 80)
+                else:
+                    target = (255, 90, 90)
                 glow_col = (
-                    int(BG_COLOR[0] + (255 - BG_COLOR[0]) * bright),
-                    int(BG_COLOR[1] + (200 - BG_COLOR[1]) * bright),
-                    int(BG_COLOR[2] + (80 - BG_COLOR[2]) * bright),
+                    int(BG_COLOR[0] + (target[0] - BG_COLOR[0]) * bright),
+                    int(BG_COLOR[1] + (target[1] - BG_COLOR[1]) * bright),
+                    int(BG_COLOR[2] + (target[2] - BG_COLOR[2]) * bright),
                 )
-                # Parse "line_glow:r,c-r,c-r,c" back into cells.
                 cells = [
                     tuple(int(n) for n in pair.split(","))
-                    for pair in anim_id[len("line_glow:"):].split("-")
+                    for pair in cells_str.split("-")
                 ]
                 if len(cells) < 2:
                     continue
@@ -657,6 +675,50 @@ class GameEngine:
                 end_px = (off_x + c1 * avail + avail // 2,
                           off_y + r1 * avail + avail // 2)
                 pygame.draw.line(surf, glow_col, start_px, end_px, 8)
+
+            # While the result panel is up, paint each completed line
+            # with a steady streak (so the player can study WHICH lines
+            # scored), and float a "+N" / "-N" label at the line's
+            # midpoint showing its contribution to ink.
+            if self.showing_result and pl.last_line_contributions:
+                badge_font = pygame.font.SysFont("consolas", max(18, avail // 4), bold=True)
+                for contrib in pl.last_line_contributions:
+                    cells = contrib["cells"]
+                    if len(cells) < 2:
+                        continue
+                    r0, c0 = cells[0]
+                    r1, c1 = cells[-1]
+                    start_px = (off_x + c0 * avail + avail // 2,
+                                off_y + r0 * avail + avail // 2)
+                    end_px = (off_x + c1 * avail + avail // 2,
+                              off_y + r1 * avail + avail // 2)
+                    if contrib["side"] == "X":
+                        streak_col = (255, 200, 80)
+                        sign = "+"
+                    else:
+                        streak_col = (255, 90, 90)
+                        # Double Cross flips O to positive contribution.
+                        sign = "+" if contrib["contribution"] >= 0 else "-"
+                    pygame.draw.line(surf, streak_col, start_px, end_px, 5)
+                    # Midpoint label with the signed contribution. We
+                    # render onto a small dark-rect "chip" for legibility
+                    # over both empty cells and placed marks.
+                    mx_ = (start_px[0] + end_px[0]) // 2
+                    my_ = (start_px[1] + end_px[1]) // 2
+                    label = f"{sign}{abs(contrib['contribution'])}"
+                    ls = badge_font.render(label, True, streak_col)
+                    bw, bh = ls.get_width() + 12, ls.get_height() + 4
+                    pygame.draw.rect(
+                        surf, (8, 8, 16),
+                        (mx_ - bw // 2, my_ - bh // 2, bw, bh),
+                        border_radius=4,
+                    )
+                    pygame.draw.rect(
+                        surf, streak_col,
+                        (mx_ - bw // 2, my_ - bh // 2, bw, bh),
+                        1, border_radius=4,
+                    )
+                    surf.blit(ls, (mx_ - ls.get_width() // 2, my_ - ls.get_height() // 2))
 
             # score display
             draw_score(surf, pl.player.score, pl.current_target, 20, 30)
@@ -823,6 +885,37 @@ class GameEngine:
                         )
                         surf.blit(total_surf,
                                   (SCREEN_W // 2 - total_surf.get_width() // 2, panel_top + 130))
+
+                    # Per-line breakdown — fades in after the total
+                    # finishes. A compact "Your lines (+N) / Opponent
+                    # lines (-M)" summary plus per-line chips so the
+                    # player sees exactly where the score came from.
+                    if total_t >= 1.0 and pl.last_line_contributions:
+                        breakdown_font = pygame.font.SysFont("consolas", 16)
+                        line_y = panel_top + 170
+                        # Aggregate by side for the summary line.
+                        x_total = sum(
+                            c["contribution"] for c in pl.last_line_contributions
+                            if c["side"] == "X"
+                        )
+                        o_total = sum(
+                            c["contribution"] for c in pl.last_line_contributions
+                            if c["side"] == "O"
+                        )
+                        x_count = sum(1 for c in pl.last_line_contributions if c["side"] == "X")
+                        o_count = sum(1 for c in pl.last_line_contributions if c["side"] == "O")
+                        parts: list[tuple[str, tuple[int, int, int]]] = []
+                        if x_count:
+                            parts.append((f"Your lines x{x_count}:  +{x_total} ink", (255, 200, 80)))
+                        if o_count:
+                            sign = "+" if o_total >= 0 else ""
+                            parts.append(
+                                (f"Opp lines x{o_count}:  {sign}{o_total} ink", (255, 90, 90))
+                            )
+                        for text, col in parts:
+                            sfc = breakdown_font.render(text, True, col)
+                            surf.blit(sfc, (SCREEN_W // 2 - sfc.get_width() // 2, line_y))
+                            line_y += sfc.get_height() + 4
 
                     # Footer (reason / continue) only after staging done.
                     staging_done = total_t >= 1.0

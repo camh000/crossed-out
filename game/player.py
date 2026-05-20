@@ -63,9 +63,13 @@ class RunState:
     # Last evaluated score breakdown — for the UI to show "ink × mult".
     # `last_total` is THIS evaluation's contribution (not cumulative);
     # the score count-up animation interpolates 0 → last_total.
+    # `last_line_contributions` is a list of per-line dicts produced by
+    # CardSystem.line_contributions — the result panel paints labels at
+    # each line's midpoint to show where the ink came from.
     last_ink: int = 0
     last_mult: float = 1.0
     last_total: int = 0
+    last_line_contributions: list = field(default_factory=list)
     player: Player = field(default_factory=Player)
 
     def get_grid_size(self) -> int:

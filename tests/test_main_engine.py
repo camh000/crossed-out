@@ -957,21 +957,68 @@ class TestGrowthPersistsWithinLevel:
     @patch('pygame.display.set_mode')
     @patch('pygame.display.set_caption')
     @patch('pygame.time.get_ticks', return_value=1000)
-    def test_growth_resets_on_level_transition(self, mock_ticks, mock_caption, mock_mode, mock_init):
+    def test_growth_carries_across_level_transition(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """Growth survives a level change too: the new level's base only
+        expands the board further; it never shrinks it."""
         from main import GameEngine
         engine = GameEngine()
         with patch('main.get_unlocked_cards', return_value=[]):
             engine.new_run()
         pl = engine.engine.state
-        engine.start_game()
+        engine.start_game()  # level 1, 3x3
+        # Grow level 1 board to 6x6 across several "draw" expansions.
         engine.board.grow_row_and_column()
-        assert engine.board.rows == 4
-        # Level up → fresh 5x5 base (level 2).
+        engine.board.grow_row_and_column()
+        engine.board.grow_row_and_column()
+        assert engine.board.rows == 6 and engine.board.cols == 6
+        # Advance to level 2 (base 5). Player kept the 6x6.
         pl.next_level()
         engine.start_game()
         assert pl.level == 2
+        assert engine.board.size == 5  # line-length target updated
+        assert engine.board.rows == 6  # bounding box preserved
+        assert engine.board.cols == 6
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_level_transition_expands_when_growth_below_base(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """If the board hasn't grown past the new level's base size, it
+        gets expanded out to that base."""
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        engine.start_game()  # 3x3
+        engine.board.grow_row_and_column()  # 4x4
+        pl.next_level()
+        engine.start_game()
+        # 4x4 was below the level-2 base (5) → expanded to 5x5.
         assert engine.board.rows == 5
         assert engine.board.cols == 5
+        assert engine.board.size == 5
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_new_run_resets_board(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """A fresh run starts on a fresh 3x3, even if the previous run
+        ended with a larger grown board."""
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        engine.start_game()
+        for _ in range(4):
+            engine.board.grow_row_and_column()
+        assert engine.board.rows > 3
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        assert engine.board.rows == 3
+        assert engine.board.cols == 3
 
     def test_clear_marks_preserves_box_but_wipes_grid(self):
         from game.board import Board, PLAYER_X, OPPONENT_O

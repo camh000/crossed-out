@@ -58,6 +58,9 @@ class GameEngine:
 
     def new_run(self):
         self.engine.start_new_run()
+        # Fresh board for a fresh run — without this, growth from the
+        # previous run would carry over into the new one's first game.
+        self.board.reset(self.engine.state.get_grid_size())
         pl = self.engine.state.player
         pl.deck = self.card_system.generate_deck()
         unlocked = get_unlocked_cards()
@@ -70,13 +73,11 @@ class GameEngine:
         pl = self.engine.state
         pl.games_in_level += 1
         gs = pl.get_grid_size()
-        # First game of a level → full reset to the level's base grid size.
-        # Subsequent games keep any growth gained from draws in prior games
-        # so the board doesn't shrink back between rounds.
-        if pl.games_in_level == 1 or self.board.size != gs:
-            self.board.reset(gs)
-        else:
-            self.board.clear_marks()
+        # Growth carries across both games AND levels. The line-length
+        # target advances with the level (3 → 5 → 7), and the bounding
+        # box expands rightward/downward if the player hadn't already
+        # grown past the new base size. The board never shrinks.
+        self.board.advance_to_size(gs)
         pl.current_target = pl.get_target()
         # Per-game scratch resets.
         pl.player.score = 0

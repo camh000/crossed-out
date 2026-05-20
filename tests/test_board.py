@@ -156,6 +156,31 @@ class TestBoard:
         assert len(lines) == 1
         assert lines[0][0] == PLAYER_X
 
+    def test_get_lines_includes_longer_runs(self):
+        """A run longer than `size` is emitted as ONE line covering all
+        its cells — not as a series of overlapping size-windows."""
+        from game.board import Board, PLAYER_X
+        b = Board()  # size 3
+        b.grow_row_and_column()  # 4x4
+        b.grow_row_and_column()  # 5x5
+        # 5 X's in a row on a size-3 board.
+        for c in range(5):
+            b.grid[0][c] = PLAYER_X
+        lines = b.get_lines()
+        # Exactly one line, with all 5 cells in it.
+        runs = [cells for (val, cells) in lines if val == PLAYER_X and len(cells) >= 3]
+        assert len(runs) == 1
+        assert len(runs[0]) == 5
+
+    def test_get_lines_skips_shorter_than_size(self):
+        """A 2-in-a-row on a size=3 board doesn't count as a line."""
+        from game.board import Board, PLAYER_X
+        b = Board()
+        b.grid[0][0] = PLAYER_X
+        b.grid[0][1] = PLAYER_X
+        lines = b.get_lines()
+        assert lines == []
+
     def test_count_lines_for(self):
         from game.board import Board, PLAYER_X
         b = Board()

@@ -145,13 +145,13 @@ class Board:
         return EMPTY
 
     def get_lines(self) -> list[tuple[int, list[tuple[int, int]]]]:
-        """Return all runs of exactly `size` consecutive same-mark cells.
+        """Return all runs of length >= `size` consecutive same-mark cells.
 
-        Iterates over the four directions (→, ↓, ↘, ↙) starting from any
-        valid cell whose "previous" cell in that direction is not the same
-        mark — this prevents counting overlapping sub-runs of a longer run
-        more than once for the starting position, while still emitting one
-        line per overlapping `size`-window when a longer run exists.
+        Each run is returned as a single line covering its full length,
+        not as a series of overlapping `size`-windows. On a grown board
+        this means a 5-in-a-row on a level-1 game (size=3) emits one
+        5-cell line — scoring scales with line length via
+        `_line_base_ink`, so longer lines reward more ink than short ones.
         """
         lines: list[tuple[int, list[tuple[int, int]]]] = []
         directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
@@ -160,18 +160,23 @@ class Board:
                 if self.grid[r][c] != val:
                     continue
                 for dr, dc in directions:
+                    # Only count from the run's start cell — the one
+                    # whose "previous" in this direction isn't the same
+                    # mark. Avoids emitting the same run multiple times.
                     prev = (r - dr, c - dc)
                     if prev in self.valid_cells and self.grid[prev[0]][prev[1]] == val:
                         continue
                     cells = []
-                    for i in range(self.size):
+                    i = 0
+                    while True:
                         nr, nc = r + i * dr, c + i * dc
                         if (nr, nc) not in self.valid_cells:
                             break
                         if self.grid[nr][nc] != val:
                             break
                         cells.append((nr, nc))
-                    if len(cells) == self.size:
+                        i += 1
+                    if len(cells) >= self.size:
                         lines.append((val, cells))
         return lines
 

@@ -360,6 +360,39 @@ class TestPlacedAtAging:
         assert b.placed_at[1][1] == -1
 
 
+class TestWallAwareFullness:
+    """Wall cells are permanently un-placeable, so they must count as
+    'full' for is_full / count_empty / get_empty_cells. Otherwise jokers
+    like Fortress that lock a cell would make the game un-endable under
+    the first-to-fill rule."""
+
+    def test_is_full_with_walls_and_marks_filling_rest(self):
+        from game.board import Board, PLAYER_X
+        b = Board()
+        b.wall_cells = [(1, 1)]
+        # Fill every non-wall cell.
+        for (r, c) in sorted(b.valid_cells):
+            if (r, c) == (1, 1):
+                continue
+            b.place_at(r, c, PLAYER_X)
+        assert b.is_full() is True
+
+    def test_count_empty_excludes_walls(self):
+        from game.board import Board
+        b = Board()
+        b.wall_cells = [(0, 0), (2, 2)]
+        # Nothing placed; 9 cells, 2 walls → 7 empties.
+        assert b.count_empty() == 7
+
+    def test_get_empty_cells_excludes_walls(self):
+        from game.board import Board
+        b = Board()
+        b.wall_cells = [(1, 1)]
+        empties = b.get_empty_cells()
+        assert (1, 1) not in empties
+        assert len(empties) == 8
+
+
 class TestVisibleGridView:
     """Board.visible_grid_view(fade_age) returns a copy of `grid` with
     cells aged past `fade_age` replaced by EMPTY. Used by the Blind boss

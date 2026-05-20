@@ -179,7 +179,14 @@ class Board:
         return sum(1 for v, _ in self.get_lines() if v == val)
 
     def count_empty(self) -> int:
-        return sum(1 for (r, c) in self.valid_cells if self.grid[r][c] == EMPTY)
+        """Cells that could still receive a mark. Wall cells are
+        excluded — they're permanently un-placeable, so they count as
+        'full' for end-of-game purposes."""
+        walls = set(self.wall_cells)
+        return sum(
+            1 for (r, c) in self.valid_cells
+            if self.grid[r][c] == EMPTY and (r, c) not in walls
+        )
 
     def is_full(self) -> bool:
         return self.count_empty() == 0
@@ -204,7 +211,14 @@ class Board:
         return [[int(random.uniform(1.0, 5.0)) for _ in range(self.cols)] for _ in range(self.rows)]
 
     def get_empty_cells(self) -> list[tuple[int, int]]:
-        return [(r, c) for (r, c) in sorted(self.valid_cells) if self.grid[r][c] == EMPTY]
+        """Sorted list of cells that could still receive a mark — i.e.
+        empty AND not a wall. The AI and trigger handlers iterate over
+        this when looking for placement targets."""
+        walls = set(self.wall_cells)
+        return [
+            (r, c) for (r, c) in sorted(self.valid_cells)
+            if self.grid[r][c] == EMPTY and (r, c) not in walls
+        ]
 
     def visible_grid_view(self, fade_age: int) -> list[list[int]]:
         """Return a copy of `grid` where cells aged at or past `fade_age`

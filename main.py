@@ -1215,15 +1215,20 @@ class GameEngine:
             # what they already have while deciding.
             self._draw_joker_row(surf, pl)
 
-            # Reroll button (free uses indicated when available).
-            reroll_btn = pygame.Rect(SCREEN_W // 2 - 230, SCREEN_H - 100, 140, 50)
+            # Action buttons sit ABOVE the glyph row (which lives at
+            # y=JOKER_ROW_Y). Before, they were at y=SCREEN_H-100=1180
+            # which collided with the glyph row at y=1166 — clicks
+            # landed on whichever was drawn first and felt random.
+            btn_y = JOKER_ROW_Y - 70
+            reroll_btn = pygame.Rect(SCREEN_W // 2 - 220, btn_y, 200, 56)
             pygame.draw.rect(surf, (60, 60, 100), reroll_btn, border_radius=8)
+            pygame.draw.rect(surf, ACCENT_GOLD, reroll_btn, 2, border_radius=8)
             free = pl.player.upgrades.get("free_rerolls", 0)
             reroll_label = f"Reroll (FREE x{free})" if free > 0 else "Reroll (2)"
             rt = pygame.font.SysFont("sans-serif", 18).render(reroll_label, True, TEXT_COLOR)
             surf.blit(rt, (reroll_btn.centerx - rt.get_width() // 2, reroll_btn.centery - rt.get_height() // 2))
 
-            continue_btn = pygame.Rect(SCREEN_W // 2 - 80, SCREEN_H - 100, 160, 50)
+            continue_btn = pygame.Rect(SCREEN_W // 2 + 20, btn_y, 200, 56)
             pygame.draw.rect(surf, ACCENT_GREEN, continue_btn, border_radius=8)
             cont_t = pygame.font.SysFont("sans-serif", 20).render("Continue", True, (0, 0, 0))
             surf.blit(cont_t, (continue_btn.centerx - cont_t.get_width() // 2, continue_btn.centery - cont_t.get_height() // 2))
@@ -1480,7 +1485,9 @@ class GameEngine:
                         break
 
             # Reroll button — free if free_rerolls remain, else REROLL_COST.
-            reroll_btn = pygame.Rect(SCREEN_W // 2 - 230, SCREEN_H - 100, 140, 50)
+            # Rect must match the draw layout in the shop draw branch.
+            btn_y = JOKER_ROW_Y - 70
+            reroll_btn = pygame.Rect(SCREEN_W // 2 - 220, btn_y, 200, 56)
             if reroll_btn.collidepoint(mx, my):
                 free = pl.player.upgrades.get("free_rerolls", 0)
                 if free > 0:
@@ -1492,7 +1499,7 @@ class GameEngine:
                     offer_count = 4 + pl.player.upgrades.get("shop_offer_extra", 0)
                     self.shop_cards = self._sample_shop_offers(offer_count)
 
-            cont = pygame.Rect(SCREEN_W // 2 - 80, SCREEN_H - 100, 160, 50)
+            cont = pygame.Rect(SCREEN_W // 2 + 20, btn_y, 200, 56)
             if cont.collidepoint(mx, my):
                 pl.next_level()
                 if pl.run_complete:

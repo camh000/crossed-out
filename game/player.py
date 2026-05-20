@@ -55,6 +55,9 @@ class RunState:
     # draw within the same game. 0 = run failed immediately.
     lives: int = 3
     max_lives: int = 3
+    # Phoenix joker: once per run, when you would lose the run, restore
+    # 1 life instead. Flag tracks "have we already burnt the revival?".
+    phoenix_used: bool = False
     # Cap on owned jokers. Shop refuses to sell more once reached.
     joker_cap: int = 5
     # Per-game scratch state, reset in start_game.

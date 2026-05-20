@@ -16,6 +16,23 @@ _PERSISTENT_UPGRADE_KEYS = {
     "token_bonus",
     "final_count",
     "board_control",
+    # New scoring buffs.
+    "edge_lord",
+    "centripetal",
+    "long_bow",
+    "first_strike",
+    "rich_vein",
+    "quartet",
+    "war_machine",
+    "last_stand",
+    "crescendo",
+    "magnitude",
+    "lethal",
+    "phoenix",
+    "shield",
+    "patience",
+    "pacifist",
+    "cursed_coin",
 }
 
 # Pure scoring-buff jokers: name → upgrade key counted from passive_cards.
@@ -27,6 +44,22 @@ _CARD_UPGRADE = {
     "Token Bonus": "token_bonus",
     "Final Count": "final_count",
     "Board Control": "board_control",
+    "Edge Lord": "edge_lord",
+    "Centripetal": "centripetal",
+    "Long Bow": "long_bow",
+    "First Strike": "first_strike",
+    "Rich Vein": "rich_vein",
+    "Quartet": "quartet",
+    "War Machine": "war_machine",
+    "Last Stand": "last_stand",
+    "Crescendo": "crescendo",
+    "Magnitude": "magnitude",
+    "Lethal": "lethal",
+    "Phoenix": "phoenix",
+    "Shield": "shield",
+    "Patience": "patience",
+    "Pacifist": "pacifist",
+    "Cursed Coin": "cursed_coin",
 }
 
 
@@ -50,12 +83,28 @@ class CardSystem:
         # Per-game consumables — re-seeded each start.
         player.upgrades["sacrifice_charges"] = player.passive_cards.count("Sacrifice")
         player.upgrades["overload_charges"] = player.passive_cards.count("Overload")
+        player.upgrades["flame_charges"] = player.passive_cards.count("Flame")
         player.upgrades["skip_opponent"] = 0  # Quick Draw repopulates on game start.
+        # Per-game counters that drive scoring buffs and end-game bonuses.
+        # Cleared by post_game_cleanup so they don't bleed across games.
+        player.upgrades["os_destroyed"] = 0
+        player.upgrades["lines_scored"] = 0
+        player.upgrades["first_x_line_done"] = 0
+        player.upgrades["x_placed_count"] = 0
+        player.upgrades["ai_placed_count"] = 0
+        # Counter-trigger payoff (set when Counter / Vampire fire).
+        player.upgrades.pop("counter_bonus_ink", None)
+        player.upgrades.pop("vampire_tokens", None)
 
     def post_game_cleanup(self, player: Player) -> None:
         """Wipe per-game scratch state. Persistent buff stacks survive — they
         get re-applied via `apply_passive_buffs` next game."""
-        one_shot_keys = ("skip_opponent", "sacrifice_charges", "overload_charges")
+        one_shot_keys = (
+            "skip_opponent", "sacrifice_charges", "overload_charges",
+            "flame_charges", "os_destroyed", "lines_scored",
+            "first_x_line_done", "x_placed_count", "ai_placed_count",
+            "counter_bonus_ink", "vampire_tokens",
+        )
         for key in one_shot_keys:
             player.upgrades.pop(key, None)
         player.blind_shot_marks = []
@@ -116,6 +165,20 @@ class CardSystem:
                 fired.append(name)
         return fired
 
+    def fire_ai_placed(self, board, player: Player, r: int, c: int) -> list[str]:
+        """Trigger fired right after the AI lands an O. Drives Counter,
+        Vampire and Interference."""
+        fired: list[str] = []
+        for name, stacks in self._stacks(player):
+            handler = _AI_PLACED_HANDLERS.get(name)
+            if handler is None:
+                continue
+            before = self._snapshot(board, player)
+            handler(board, player, r, c, stacks)
+            if self._snapshot(board, player) != before:
+                fired.append(name)
+        return fired
+
     @staticmethod
     def _snapshot(board, player: Player) -> tuple:
         """Cheap fingerprint of state that on-board triggers might
@@ -164,44 +227,36 @@ class CardSystem:
         *,
         is_boss: bool = False,
         boss_mechanic: str | None = None,
+        spotlight_zone: tuple[int, int] | None = None,
+        centre: tuple[int, int] | None = None,
+        lives: int = 3,
     ) -> tuple[int, float, int]:
         """Compute (ink, mult, total) for the current board state.
 
-        ink: additive component. Each player's completed line contributes
-        (sum of cell weights × line length) ink, plus per-card flat bonuses.
-        Opponent lines subtract ink at the same base rate — UNLESS the
-        Double Cross boss is active, in which case opponent lines add
-        ink instead (every line on the board counts toward your score).
-
-        mult: multiplicative component. Starts at 1 + level_mult, grows
-        with each multiplicative buff card.
-
-        total: int(ink * mult). Falls back to 0 if ink ≤ 0.
+        Per-line ink comes from line_contributions so the same modifiers
+        (Edge Lord, Centripetal, First Strike, etc.) are visible to both
+        the result panel and the final score. score_breakdown adds the
+        aggregate layer on top: Board Control floor, Final Count
+        multiplier, and the multiplicative Mult component.
         """
-        ink = 0
-        x_lines = self._collect_lines(board, PLAYER_X)
-        o_lines = self._collect_lines(board, OPPONENT_O)
+        contribs = self.line_contributions(
+            board, player,
+            is_boss=is_boss,
+            boss_mechanic=boss_mechanic,
+            spotlight_zone=spotlight_zone,
+            centre=centre,
+        )
+        ink = sum(c["contribution"] for c in contribs)
 
-        wildcard_stacks = player.upgrades.get("wildcard", 0)
-        if wildcard_stacks > 0:
-            x_lines += self._wildcard_lines(board, wildcard_stacks)
+        # Quartet — owning ≥4 distinct buff jokers doubles ink.
+        quartet = player.upgrades.get("quartet", 0)
+        if quartet > 0 and len({n for n in player.passive_cards}) >= 4:
+            ink *= 2
 
-        blind_marks = set(player.blind_shot_marks)
-        for cells in x_lines:
-            line_ink = self._line_base_ink(board, cells)
-            if any(cell in blind_marks for cell in cells):
-                line_ink *= 2
-            ink += line_ink
-            ink += player.upgrades.get("point_mult", 0) * 3
-            ink += player.upgrades.get("deep_grid", 0)
-
-        double_cross = is_boss and boss_mechanic == "doublecross"
-        for cells in o_lines:
-            line_ink = self._line_base_ink(board, cells)
-            if double_cross:
-                ink += line_ink
-            else:
-                ink -= line_ink
+        # Last Stand — when down to your final life, +50% ink (per copy).
+        last_stand = player.upgrades.get("last_stand", 0)
+        if last_stand > 0 and lives <= 1:
+            ink = int(ink * (1.0 + 0.5 * last_stand))
 
         # Board Control floor — each copy adds size*size to a lower bound.
         bc = player.upgrades.get("board_control", 0)
@@ -217,9 +272,28 @@ class CardSystem:
 
         # Multiplicative component.
         mult = 1.0 + max(0, level_mult - 1)
+        x_lines_for_diag = [c["cells"] for c in contribs if c["side"] == "X"]
         diag_stacks = player.upgrades.get("diagonal_power", 0)
-        if diag_stacks > 0 and any(self._is_diagonal(board, cells) for cells in x_lines):
+        if diag_stacks > 0 and any(self._is_diagonal(board, cells) for cells in x_lines_for_diag):
             mult += 0.5 * diag_stacks
+        # Crescendo — Mult +0.2 per X line scored this game (cumulative
+        # across the run between cleanups). Read off the upgrade counter
+        # that evaluate_and_settle bumps when this game's lines settle.
+        crescendo = player.upgrades.get("crescendo", 0)
+        if crescendo > 0:
+            mult += 0.2 * crescendo * player.upgrades.get("lines_scored", 0)
+        # Magnitude — Mult +1 when board has grown past the 5x5 base.
+        magnitude = player.upgrades.get("magnitude", 0)
+        if magnitude > 0 and max(board.rows, board.cols) > 5:
+            mult += magnitude
+        # Lethal — Mult +0.5 on boss games.
+        lethal = player.upgrades.get("lethal", 0)
+        if lethal > 0 and is_boss:
+            mult += 0.5 * lethal
+        # War Machine — if ≥3 O's destroyed this game, double Mult.
+        war_machine = player.upgrades.get("war_machine", 0)
+        if war_machine > 0 and player.upgrades.get("os_destroyed", 0) >= 3:
+            mult *= 2 * war_machine
 
         if ink <= 0:
             return 0, mult, 0
@@ -237,6 +311,8 @@ class CardSystem:
         *,
         is_boss: bool = False,
         boss_mechanic: str | None = None,
+        spotlight_zone: tuple[int, int] | None = None,
+        centre: tuple[int, int] | None = None,
     ) -> list[dict]:
         """Per-line breakdown of how each completed line contributes to the
         final ink. Used by the result panel to show 'where did the score
@@ -267,7 +343,40 @@ class CardSystem:
         deep_grid_stacks = player.upgrades.get("deep_grid", 0)
         double_cross = is_boss and boss_mechanic == "doublecross"
 
+        edge_lord_stacks = player.upgrades.get("edge_lord", 0)
+        centripetal_stacks = player.upgrades.get("centripetal", 0)
+        long_bow_stacks = player.upgrades.get("long_bow", 0)
+        first_x_done = player.upgrades.get("first_x_line_done", 0)
+        first_strike_stacks = player.upgrades.get("first_strike", 0)
+        rich_vein = player.upgrades.get("rich_vein", 0)
+        joker_diversity = len({n for n in player.passive_cards})
+        counter_bonus = player.upgrades.get("counter_bonus_ink", 0)
+
+        rmin = min((rr for (rr, _) in board.valid_cells), default=0)
+        rmax = max((rr for (rr, _) in board.valid_cells), default=0)
+        cmin = min((cc for (_, cc) in board.valid_cells), default=0)
+        cmax = max((cc for (_, cc) in board.valid_cells), default=0)
+
+        def _on_edge(line) -> bool:
+            return all(
+                r in (rmin, rmax) or c in (cmin, cmax) for (r, c) in line
+            )
+
+        def _through_centre(line) -> bool:
+            if centre is None:
+                return False
+            return centre in line
+
+        def _in_spotlight(line) -> bool:
+            if spotlight_zone is None:
+                return True
+            ar, ac = spotlight_zone
+            return all(ar <= r <= ar + 2 and ac <= c <= ac + 2 for (r, c) in line)
+
         for cells in x_lines:
+            # Spotlight boss: lines outside the zone score nothing.
+            if boss_mechanic == "spotlight" and not _in_spotlight(cells):
+                continue
             base = self._line_base_ink(board, cells)
             mods: list[tuple[str, int]] = []
             line_ink = base
@@ -281,6 +390,36 @@ class CardSystem:
             if deep_grid_stacks > 0:
                 mods.append((f"Deep Grid x{deep_grid_stacks}", deep_grid_stacks))
                 line_ink += deep_grid_stacks
+            if edge_lord_stacks > 0 and _on_edge(cells):
+                bonus = (line_ink * edge_lord_stacks) // 2
+                mods.append((f"Edge Lord +{50 * edge_lord_stacks}%", bonus))
+                line_ink += bonus
+            if centripetal_stacks > 0 and _through_centre(cells):
+                bonus = 5 * centripetal_stacks
+                mods.append((f"Centripetal x{centripetal_stacks}", bonus))
+                line_ink += bonus
+            if long_bow_stacks > 0 and len(cells) == board.size:
+                # On a grown board, lines longer than base size exist too —
+                # this rewards staying at the original size.
+                if (rmax - rmin + 1) > board.size or (cmax - cmin + 1) > board.size:
+                    mods.append((f"Long Bow x{long_bow_stacks}", line_ink * long_bow_stacks))
+                    line_ink += line_ink * long_bow_stacks
+            if first_strike_stacks > 0 and not first_x_done:
+                bonus = 20 * first_strike_stacks
+                mods.append((f"First Strike +{bonus}", bonus))
+                line_ink += bonus
+                first_x_done = 1  # only the very first line gets it
+            if rich_vein > 0 and joker_diversity >= 3:
+                mods.append((f"Rich Vein +{10 * rich_vein}", 10 * rich_vein))
+                line_ink += 10 * rich_vein
+            if counter_bonus > 0:
+                mods.append((f"Counter +{counter_bonus}", counter_bonus))
+                line_ink += counter_bonus
+                counter_bonus = 0  # one-shot
+            # Inverse boss: lines through the centre cell score negative.
+            if boss_mechanic == "inverse" and _through_centre(cells):
+                mods.append(("Inverse (centre)", -2 * line_ink))
+                line_ink = -line_ink
             contribs.append({
                 "cells": list(cells),
                 "side": "X",
@@ -291,6 +430,9 @@ class CardSystem:
             })
 
         for cells in o_lines:
+            # Spotlight boss zeroes lines outside the zone.
+            if boss_mechanic == "spotlight" and not _in_spotlight(cells):
+                continue
             base = self._line_base_ink(board, cells)
             sign = 1 if double_cross else -1
             contribs.append({
@@ -490,7 +632,7 @@ def _trigger_overload_on_x(board, player: Player, r: int, c: int, stacks: int) -
     charges = player.upgrades.get("overload_charges", 0)
     if charges <= 0:
         return
-    destroyed = False
+    destroyed = 0
     for dr in (-1, 0, 1):
         for dc in (-1, 0, 1):
             if dr == 0 and dc == 0:
@@ -499,14 +641,16 @@ def _trigger_overload_on_x(board, player: Player, r: int, c: int, stacks: int) -
             if (nr, nc) in board.valid_cells and board.grid[nr][nc] == OPPONENT_O:
                 board.grid[nr][nc] = EMPTY
                 board.placed_at[nr][nc] = -1
-                destroyed = True
+                destroyed += 1
     if destroyed:
         player.upgrades["overload_charges"] = charges - 1
+        player.upgrades["os_destroyed"] = player.upgrades.get("os_destroyed", 0) + destroyed
 
 
 # --- on_line_completed ------------------------------------------------------
 
 def _trigger_chain_reaction_on_line(board, player: Player, line_cells, stacks: int) -> None:
+    flipped = 0
     for (r, c) in line_cells:
         for dr in (-1, 0, 1):
             for dc in (-1, 0, 1):
@@ -515,6 +659,10 @@ def _trigger_chain_reaction_on_line(board, player: Player, line_cells, stacks: i
                 nr, nc = r + dr, c + dc
                 if (nr, nc) in board.valid_cells and board.grid[nr][nc] == OPPONENT_O:
                     board.grid[nr][nc] = PLAYER_X
+                    board.placed_at[nr][nc] = board.move_count
+                    flipped += 1
+    if flipped:
+        player.upgrades["os_destroyed"] = player.upgrades.get("os_destroyed", 0) + flipped
 
 
 # --- on_shop_open -----------------------------------------------------------
@@ -525,6 +673,153 @@ def _trigger_reroll_free(player: Player, stacks: int) -> None:
 
 def _trigger_extra_offer(player: Player, stacks: int) -> None:
     player.upgrades["shop_offer_extra"] = player.upgrades.get("shop_offer_extra", 0) + stacks
+
+
+def _trigger_wholesaler(player: Player, stacks: int) -> None:
+    """Shop card costs are reduced by `stacks` (minimum 1). Stored on the
+    upgrades dict and read by the shop click handler in main.py."""
+    player.upgrades["shop_discount"] = player.upgrades.get("shop_discount", 0) + stacks
+
+
+def _trigger_banker(player: Player, stacks: int) -> None:
+    """+1 token per 3 tokens already held when the shop opens, per copy.
+    Compounding savings interest."""
+    interest = stacks * (player.tokens // 3)
+    if interest:
+        player.tokens += interest
+
+
+# --- on_x_placed (new handlers) --------------------------------------------
+
+def _trigger_flame_on_x(board, player: Player, r: int, c: int, stacks: int) -> None:
+    """Destroys orthogonally adjacent O's. Smaller AoE than Overload —
+    no diagonals — and uses its own charge pool (also 1/copy/game)."""
+    charges = player.upgrades.get("flame_charges", 0)
+    if charges <= 0:
+        return
+    destroyed = 0
+    for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+        nr, nc = r + dr, c + dc
+        if (nr, nc) in board.valid_cells and board.grid[nr][nc] == OPPONENT_O:
+            board.grid[nr][nc] = EMPTY
+            board.placed_at[nr][nc] = -1
+            destroyed += 1
+    if destroyed:
+        player.upgrades["flame_charges"] = charges - 1
+        player.upgrades["os_destroyed"] = player.upgrades.get("os_destroyed", 0) + destroyed
+
+
+def _trigger_stutter_on_x(board, player: Player, r: int, c: int, stacks: int) -> None:
+    """Every 3rd X placement (cumulative across the game) also mirrors
+    to the cell on the opposite edge of the board, if empty."""
+    count = player.upgrades.get("x_placed_count", 0) + 1
+    player.upgrades["x_placed_count"] = count
+    if count % 3 != 0:
+        return
+    rows = [rr for (rr, _) in board.valid_cells]
+    cols = [cc for (_, cc) in board.valid_cells]
+    opp = (max(rows) - (r - min(rows)), max(cols) - (c - min(cols)))
+    if opp == (r, c) or opp not in board.valid_cells:
+        return
+    if board.grid[opp[0]][opp[1]] != EMPTY or opp in board.wall_cells:
+        return
+    if board.place_at(opp[0], opp[1], PLAYER_X):
+        player.cells_played.append(opp)
+
+
+def _trigger_magnet_on_x(board, player: Player, r: int, c: int, stacks: int) -> None:
+    """Move the nearest O one cell closer to the just-placed X (Manhattan
+    direction). Per copy: pulls one more O."""
+    os = [(rr, cc) for (rr, cc) in board.valid_cells if board.grid[rr][cc] == OPPONENT_O]
+    if not os:
+        return
+    # Sort by Manhattan distance to (r, c), pull the nearest `stacks`.
+    os.sort(key=lambda p: abs(p[0] - r) + abs(p[1] - c))
+    for (or_, oc_) in os[:stacks]:
+        # Step the O one cell along whichever axis has the bigger gap.
+        dr = (r - or_) and (1 if r > or_ else -1)
+        dc = (c - oc_) and (1 if c > oc_ else -1)
+        # Prefer the larger axis if both are non-zero.
+        if abs(r - or_) >= abs(c - oc_):
+            step = (or_ + dr, oc_) if dr else (or_, oc_ + dc)
+        else:
+            step = (or_, oc_ + dc) if dc else (or_ + dr, oc_)
+        if step == (or_, oc_):
+            continue
+        if step not in board.valid_cells:
+            continue
+        if board.grid[step[0]][step[1]] != EMPTY or step in board.wall_cells:
+            continue
+        board.grid[or_][oc_] = EMPTY
+        board.placed_at[or_][oc_] = -1
+        board.grid[step[0]][step[1]] = OPPONENT_O
+        board.placed_at[step[0]][step[1]] = board.move_count
+
+
+def _trigger_cascade_on_x(board, player: Player, r: int, c: int, stacks: int) -> None:
+    """If the just-placed X is collinear with two existing X's, spawn an
+    extra X on the line's extension cell (if valid + empty)."""
+    for dr, dc in ((0, 1), (1, 0), (1, 1), (1, -1)):
+        # Walk both ways from (r, c) and count consecutive X's.
+        run_forward = 0
+        nr, nc = r + dr, c + dc
+        while (nr, nc) in board.valid_cells and board.grid[nr][nc] == PLAYER_X:
+            run_forward += 1
+            nr += dr
+            nc += dc
+        run_back = 0
+        pr, pc = r - dr, c - dc
+        while (pr, pc) in board.valid_cells and board.grid[pr][pc] == PLAYER_X:
+            run_back += 1
+            pr -= dr
+            pc -= dc
+        if run_forward + run_back >= 2:
+            # Find the next empty extension cell on whichever side.
+            for ext in ((nr, nc), (pr, pc)):
+                if (ext in board.valid_cells and board.grid[ext[0]][ext[1]] == EMPTY
+                        and ext not in board.wall_cells):
+                    if board.place_at(ext[0], ext[1], PLAYER_X):
+                        player.cells_played.append(ext)
+                        return
+
+
+# --- on_ai_placed (new hook) ----------------------------------------------
+
+def _trigger_counter_on_ai(board, player: Player, r: int, c: int, stacks: int) -> None:
+    """The next X line you score gets +2 ink per stack. Stored as a
+    one-shot bonus the line_contributions calculator reads."""
+    player.upgrades["counter_bonus_ink"] = (
+        player.upgrades.get("counter_bonus_ink", 0) + 2 * stacks
+    )
+
+
+def _trigger_vampire_on_ai(board, player: Player, r: int, c: int, stacks: int) -> None:
+    """Accumulate +1 token per O placed by the AI, paid out at game end."""
+    player.upgrades["vampire_tokens"] = (
+        player.upgrades.get("vampire_tokens", 0) + stacks
+    )
+
+
+def _trigger_interference_on_ai(board, player: Player, r: int, c: int, stacks: int) -> None:
+    """Every 4th AI placement is randomised — overwrite the just-placed
+    O onto a random empty cell. Stack count multiplies the frequency
+    (1 stack = every 4th, 2 stacks = every 3rd, etc.)."""
+    count = player.upgrades.get("ai_placed_count", 0) + 1
+    player.upgrades["ai_placed_count"] = count
+    every = max(2, 5 - stacks)
+    if count % every != 0:
+        return
+    empty = [
+        p for p in board.get_empty_cells() if p not in board.wall_cells
+    ]
+    if not empty:
+        return
+    new = random.choice(empty)
+    # Move the O from (r, c) to a random empty cell.
+    board.grid[r][c] = EMPTY
+    board.placed_at[r][c] = -1
+    if board.place_at(new[0], new[1], OPPONENT_O):
+        pass  # placed_at stamped by place_at
 
 
 # ---------------------------------------------------------------------------
@@ -544,6 +839,10 @@ _GAME_START_HANDLERS: dict[str, Callable] = {
 _X_PLACED_HANDLERS: dict[str, Callable] = {
     "Ricochet": _trigger_ricochet_on_x,
     "Overload": _trigger_overload_on_x,
+    "Flame": _trigger_flame_on_x,
+    "Stutter": _trigger_stutter_on_x,
+    "Magnet": _trigger_magnet_on_x,
+    "Cascade": _trigger_cascade_on_x,
 }
 
 _LINE_COMPLETE_HANDLERS: dict[str, Callable] = {
@@ -553,4 +852,12 @@ _LINE_COMPLETE_HANDLERS: dict[str, Callable] = {
 _SHOP_OPEN_HANDLERS: dict[str, Callable] = {
     "Reroll": _trigger_reroll_free,
     "Card Draw": _trigger_extra_offer,
+    "Wholesaler": _trigger_wholesaler,
+    "Banker": _trigger_banker,
+}
+
+_AI_PLACED_HANDLERS: dict[str, Callable] = {
+    "Counter": _trigger_counter_on_ai,
+    "Vampire": _trigger_vampire_on_ai,
+    "Interference": _trigger_interference_on_ai,
 }

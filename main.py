@@ -177,6 +177,14 @@ class GameEngine:
             return (r, c)
         return None
 
+    def _ai_fade_age(self) -> int | None:
+        """The Blind boss is symmetric — the AI sees the same faded board
+        the player does. Other games leave the AI omniscient."""
+        pl = self.engine.state
+        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "blind":
+            return BLIND_FADE_AGE
+        return None
+
     def _should_evaluate(self) -> bool:
         """End the game on the first completed line, or when the board fills.
 
@@ -492,7 +500,7 @@ class GameEngine:
                     ts = pygame.font.SysFont("consolas", 48).render(f"{remaining:.0f}", True, ACCENT_RED)
                     surf.blit(ts, (SCREEN_W // 2 - ts.get_width() // 2, 60))
                 else:
-                    ai = OpponentAI(self.board)
+                    ai = OpponentAI(self.board, fade_age=self._ai_fade_age())
                     move = ai.get_best_move()
                     if move:
                         self.board.place_at(move[0], move[1], OPPONENT_O)
@@ -707,7 +715,7 @@ class GameEngine:
                     if skip_stack > 0:
                         pl.player.upgrades["skip_opponent"] = skip_stack - 1
                     else:
-                        ai = OpponentAI(self.board)
+                        ai = OpponentAI(self.board, fade_age=self._ai_fade_age())
                         move = ai.get_best_move()
                         if move:
                             self.board.place_at(move[0], move[1], OPPONENT_O)

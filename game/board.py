@@ -206,6 +206,24 @@ class Board:
     def get_empty_cells(self) -> list[tuple[int, int]]:
         return [(r, c) for (r, c) in sorted(self.valid_cells) if self.grid[r][c] == EMPTY]
 
+    def visible_grid_view(self, fade_age: int) -> list[list[int]]:
+        """Return a copy of `grid` where cells aged at or past `fade_age`
+        are replaced with EMPTY. Used by the Blind boss to give both the
+        renderer and the AI a 'perceived' board where old marks have
+        faded out of awareness.
+
+        A cell with placed_at == -1 (never placed, or cleared) stays as
+        whatever `grid` says it is — usually EMPTY. The fade only hides
+        cells that have an actual age >= fade_age.
+        """
+        view = [row[:] for row in self.grid]
+        for r in range(self.rows):
+            for c in range(self.cols):
+                placed = self.placed_at[r][c]
+                if placed >= 0 and self.move_count - placed >= fade_age:
+                    view[r][c] = EMPTY
+        return view
+
     def apply_swap(self):
         """Swap all X and O marks for Swap boss."""
         for (r, c) in self.valid_cells:

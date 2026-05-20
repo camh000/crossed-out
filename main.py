@@ -12,7 +12,7 @@ from config.constants import (
     ACCENT_GOLD, ACCENT_GREEN, ACCENT_RED, COLOR_X, COLOR_O,
     CARD_W, CARD_H, AI_MOVE_DELAY_MS,
 )
-from config.cards import pick_random, get_by_name
+from config.cards import pick_random, get_by_name, ALL_CARDS
 from config.bosses import BOSS_LIST
 from renders.rendering import (
     draw_card, draw_score, draw_tokens,
@@ -89,6 +89,16 @@ class GameEngine:
         # Per-boss scratch state. Reset in start_game.
         self._spotlight_anchor: tuple[int, int] | None = None
         self._tide_clear_deadlines: list[tuple[int, list[tuple[int, int]]]] = []
+
+        # Joker inspect modal — when set to a card name, draw() paints a
+        # large card view over everything. In the shop state the modal
+        # also shows a "Sell" button.
+        self._inspecting_joker: str | None = None
+        # Boss inspect target — set when the codex's bosses tab is tapped.
+        # Mutually exclusive with _inspecting_joker.
+        self._inspecting_boss: str | None = None
+        # Codex tab — "glyphs" or "bosses".
+        self._codex_tab: str = "glyphs"
 
     def new_run(self):
         self.engine.start_new_run()
@@ -639,8 +649,20 @@ class GameEngine:
             pygame.draw.rect(surf, ACCENT_GREEN, btn, border_radius=10)
             surf.blit(btn_h, (SCREEN_W // 2 - btn_h.get_width() // 2, btn.centery - 16))
 
-            desc = self.font.render("Click [X] on the grid to play. Play cards to gain advantage.", True, TEXT_SUB)
-            surf.blit(desc, (SCREEN_W // 2 - desc.get_width() // 2, SCREEN_H // 2 + 60))
+            # CODEX button — opens a browser of every glyph and every
+            # boss modifier, so players can study what's in the pool.
+            codex_btn_h = pygame.font.SysFont("consolas", 22).render("CODEX", True, TEXT_COLOR)
+            codex_btn = pygame.Rect(SCREEN_W // 2 - 120, SCREEN_H // 2 + 60, 240, 50)
+            pygame.draw.rect(surf, (40, 40, 70), codex_btn, border_radius=10)
+            pygame.draw.rect(surf, ACCENT_GOLD, codex_btn, 2, border_radius=10)
+            surf.blit(codex_btn_h, (SCREEN_W // 2 - codex_btn_h.get_width() // 2,
+                                    codex_btn.centery - codex_btn_h.get_height() // 2))
+
+            desc = self.font.render("Click [X] on the grid to play. Tap glyphs to inspect them.", True, TEXT_SUB)
+            surf.blit(desc, (SCREEN_W // 2 - desc.get_width() // 2, SCREEN_H // 2 + 140))
+
+        elif self.state == "codex":
+            self._draw_codex(surf)
 
         elif self.state == "transition":
             lv = pl.level
@@ -1133,13 +1155,13 @@ class GameEngine:
             draw_tokens(surf, pl.player.tokens, SCREEN_W - 200, 30)
             # Joker cap progress in the top-left.
             cap_txt = self.font.render(
-                f"Jokers: {len(pl.player.passive_cards)}/{pl.joker_cap}", True, TEXT_COLOR,
+                f"Glyphs: {len(pl.player.passive_cards)}/{pl.joker_cap}", True, TEXT_COLOR,
             )
             surf.blit(cap_txt, (20, 40))
             full_now = len(pl.player.passive_cards) >= pl.joker_cap
             if full_now and pygame.time.get_ticks() < self.shop_full_flash_until:
                 flash = pygame.font.SysFont("consolas", 24).render(
-                    "JOKER ROW FULL", True, ACCENT_RED,
+                    "GLYPH SLOTS FULL", True, ACCENT_RED,
                 )
                 surf.blit(flash, (SCREEN_W // 2 - flash.get_width() // 2, 110))
 
@@ -1195,15 +1217,65 @@ class GameEngine:
             btn_txt = self.font.render("MAIN MENU", True, (0, 0, 0))
             surf.blit(btn_txt, (btn.centerx - btn_txt.get_width() // 2, btn.centery - btn_txt.get_height() // 2))
 
+        # Joker inspect modal — drawn last so it sits above every other UI.
+        self._draw_inspect_modal(surf, pl)
+
         pygame.display.flip()
 
     def handle_click(self, mx, my, mouse_btn):
         pl = self.engine.state
 
+        # Inspect modal (glyph OR boss) takes priority over every
+        # state-specific handler. The Sell button is the only
+        # interactive zone inside the modal panel; everything else
+        # dismisses it.
+        if self._inspecting_joker:
+            rects = self._inspect_modal_rects()
+            if (self.state == "shop"
+                    and self._inspecting_joker != "Cursed Coin"
+                    and rects["sell"].collidepoint(mx, my)):
+                self._sell_inspected_joker()
+            else:
+                self._inspecting_joker = None
+            return
+        if self._inspecting_boss:
+            self._inspecting_boss = None
+            return
+
+        # Joker row taps in playable / shop states open the inspect modal.
+        if self.state in ("game", "shop"):
+            for name, rect in self._joker_row_rects(pl):
+                if rect.collidepoint(mx, my):
+                    self._inspecting_joker = name
+                    return
+
         if self.state == "menu":
             btn = pygame.Rect(SCREEN_W // 2 - 160, SCREEN_H // 2 - 30, 320, 60)
+            codex_btn = pygame.Rect(SCREEN_W // 2 - 120, SCREEN_H // 2 + 60, 240, 50)
             if btn.collidepoint(mx, my):
                 self.new_run()
+            elif codex_btn.collidepoint(mx, my):
+                self.state = "codex"
+                self._codex_tab = "glyphs"
+
+        elif self.state == "codex":
+            layout = self._codex_layout()
+            if layout["back"].collidepoint(mx, my):
+                self.state = "menu"
+                return
+            if layout["tab_glyphs"].collidepoint(mx, my):
+                self._codex_tab = "glyphs"
+                return
+            if layout["tab_bosses"].collidepoint(mx, my):
+                self._codex_tab = "bosses"
+                return
+            for name, rect in layout["chips"]:
+                if rect.collidepoint(mx, my):
+                    if self._codex_tab == "glyphs":
+                        self._inspecting_joker = name
+                    else:
+                        self._inspecting_boss = name
+                    return
 
         elif self.state == "transition":
             card_y = 460
@@ -1402,6 +1474,44 @@ class GameEngine:
         elif self.state == "gameover":
             self.state = "menu"
 
+    def _joker_sell_price(self, name: str) -> int:
+        """Sell price for a joker — 50% of cost, rounded down. Sacrifice
+        (cost -1) and any other free/refunding card sells for 0."""
+        card = get_by_name(name)
+        if card is None:
+            return 0
+        return max(0, card.cost // 2)
+
+    def _joker_row_rects(self, pl) -> list[tuple[str, pygame.Rect]]:
+        """Hit rects for each owned joker in the row. Used by the click
+        handler to detect taps that open the inspect modal."""
+        unique: list[str] = []
+        seen: set[str] = set()
+        for name in pl.player.passive_cards:
+            if name not in seen:
+                unique.append(name)
+                seen.add(name)
+        slots = pl.joker_cap
+        total_w = slots * JOKER_W + (slots - 1) * JOKER_GAP
+        start_x = (SCREEN_W - total_w) // 2
+        rects: list[tuple[str, pygame.Rect]] = []
+        for i, name in enumerate(unique):
+            x = start_x + i * (JOKER_W + JOKER_GAP)
+            rects.append((name, pygame.Rect(x, JOKER_ROW_Y, JOKER_W, JOKER_H)))
+        return rects
+
+    def _inspect_modal_rects(self) -> dict[str, pygame.Rect]:
+        """Layout rects for the joker inspect modal. Single source of
+        truth shared between draw() and the click handler."""
+        w, h = 480, 600
+        x = (SCREEN_W - w) // 2
+        y = (SCREEN_H - h) // 2
+        return {
+            "panel": pygame.Rect(x, y, w, h),
+            "sell": pygame.Rect(x + 40, y + h - 80, w - 80, 56),
+            "close": pygame.Rect(x + w - 56, y + 12, 40, 40),
+        }
+
     def _draw_joker_row(self, surf, pl):
         """Compact, read-only display of the player's owned jokers.
         Rendered at the bottom of the screen during gameplay and the shop.
@@ -1437,6 +1547,255 @@ class GameEngine:
                     surf, (50, 50, 70),
                     (x, JOKER_ROW_Y, JOKER_W, JOKER_H), 1, border_radius=6,
                 )
+
+    def _draw_inspect_modal(self, surf, pl) -> None:
+        """If a glyph or boss is being inspected, paint the modal: dark
+        backdrop, large card with name + (cost for glyphs) + full
+        description, and (in the shop state, glyph only) a Sell button.
+        Click handling matches against the rects from
+        _inspect_modal_rects."""
+        if self._inspecting_boss:
+            self._draw_boss_inspect(surf)
+            return
+        if not self._inspecting_joker:
+            return
+        name = self._inspecting_joker
+        card = get_by_name(name)
+        if card is None:
+            self._inspecting_joker = None
+            return
+        # Dim the world behind the modal.
+        try:
+            backdrop = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+            backdrop.fill((0, 0, 0, 170))
+            surf.blit(backdrop, (0, 0))
+        except Exception:
+            pass
+
+        rects = self._inspect_modal_rects()
+        panel = rects["panel"]
+        pygame.draw.rect(surf, (16, 16, 28), panel, border_radius=12)
+        pygame.draw.rect(surf, ACCENT_GOLD, panel, 2, border_radius=12)
+
+        # Cost badge (top-left).
+        cost_r = 28
+        cx, cy = panel.left + 38, panel.top + 38
+        pygame.draw.circle(surf, ACCENT_GOLD, (cx, cy), cost_r)
+        cost_font = pygame.font.SysFont("consolas", 32, bold=True)
+        cs = cost_font.render(str(card.cost), True, (0, 0, 0))
+        surf.blit(cs, (cx - cs.get_width() // 2, cy - cs.get_height() // 2))
+
+        # Close X (top-right).
+        close = rects["close"]
+        pygame.draw.rect(surf, (40, 40, 60), close, border_radius=6)
+        x_font = pygame.font.SysFont("consolas", 22, bold=True)
+        xs = x_font.render("x", True, TEXT_COLOR)
+        surf.blit(xs, (close.centerx - xs.get_width() // 2,
+                       close.centery - xs.get_height() // 2))
+
+        # Name (centered, single line).
+        name_font = pygame.font.SysFont("sans-serif", 32, bold=True)
+        ns = name_font.render(name, True, ACCENT_GOLD)
+        surf.blit(ns, (panel.centerx - ns.get_width() // 2, panel.top + 82))
+
+        # Stack count subtitle.
+        count = pl.player.passive_cards.count(name)
+        sub_font = pygame.font.SysFont("sans-serif", 18)
+        sub_text = f"You own: {count}" + (f"x" if count > 1 else "")
+        ss = sub_font.render(sub_text, True, TEXT_SUB)
+        surf.blit(ss, (panel.centerx - ss.get_width() // 2, panel.top + 124))
+
+        # Trigger labels.
+        if card.triggers:
+            trig_font = pygame.font.SysFont("consolas", 14)
+            trig_text = "Triggers: " + ", ".join(
+                t.replace("on_", "") for t in card.triggers
+            )
+            ts = trig_font.render(trig_text, True, (160, 160, 200))
+            surf.blit(ts, (panel.centerx - ts.get_width() // 2, panel.top + 154))
+
+        # Description — wrapped, centered, generous width.
+        from renders.rendering import draw_centered_multiline_text
+        desc_font = pygame.font.SysFont("sans-serif", 20)
+        draw_centered_multiline_text(
+            surf, card.desc or "", desc_font, TEXT_COLOR,
+            panel.top + 196, max_width=panel.width - 48, max_lines=12,
+        )
+
+        # Sell button — only shown in the shop, and only if this joker is
+        # sellable. Cursed Coin specifically resists.
+        if self.state == "shop" and name != "Cursed Coin":
+            sell = rects["sell"]
+            price = self._joker_sell_price(name)
+            pygame.draw.rect(surf, ACCENT_RED, sell, border_radius=8)
+            pygame.draw.rect(surf, (255, 220, 220), sell, 2, border_radius=8)
+            label_font = pygame.font.SysFont("consolas", 22, bold=True)
+            label = label_font.render(f"SELL  +{price} tokens", True, (0, 0, 0))
+            surf.blit(label, (sell.centerx - label.get_width() // 2,
+                              sell.centery - label.get_height() // 2))
+        elif self.state == "shop" and name == "Cursed Coin":
+            # Make the curse explicit — no sell option.
+            warn_font = pygame.font.SysFont("consolas", 16, bold=True)
+            ws = warn_font.render("Cannot be sold", True, ACCENT_RED)
+            surf.blit(ws, (panel.centerx - ws.get_width() // 2,
+                           panel.bottom - 50))
+
+    def _codex_layout(self) -> dict:
+        """Single source of truth for the codex screen's hit rects.
+        Returns: header rects (tab buttons + back), and per-entry chip
+        rects for whichever tab is active."""
+        chip_w, chip_h = 92, 90
+        chip_gap = 10
+        cols = 6
+        top_y = 200  # below the tab strip
+        layout: dict = {
+            "back": pygame.Rect(20, 20, 100, 44),
+            "tab_glyphs": pygame.Rect(SCREEN_W // 2 - 180, 90, 170, 50),
+            "tab_bosses": pygame.Rect(SCREEN_W // 2 + 10, 90, 170, 50),
+            "chips": [],
+        }
+        if self._codex_tab == "glyphs":
+            entries = [c.name for c in ALL_CARDS]
+        else:
+            from config.bosses import BOSS_LIST
+            entries = [b.name for b in BOSS_LIST]
+        total_row_w = cols * chip_w + (cols - 1) * chip_gap
+        start_x = (SCREEN_W - total_row_w) // 2
+        for i, name in enumerate(entries):
+            row = i // cols
+            col = i % cols
+            x = start_x + col * (chip_w + chip_gap)
+            y = top_y + row * (chip_h + chip_gap)
+            layout["chips"].append((name, pygame.Rect(x, y, chip_w, chip_h)))
+        return layout
+
+    def _draw_codex(self, surf) -> None:
+        """Browser of every glyph and every boss modifier. Reachable from
+        the main menu so players can study the full pool before
+        committing to a run."""
+        draw_big_centered_text(surf, "CODEX", self.big_font, ACCENT_GOLD, 20)
+
+        layout = self._codex_layout()
+
+        # Back button.
+        back = layout["back"]
+        pygame.draw.rect(surf, (40, 40, 60), back, border_radius=8)
+        pygame.draw.rect(surf, ACCENT_GOLD, back, 2, border_radius=8)
+        bf = self.font.render("BACK", True, TEXT_COLOR)
+        surf.blit(bf, (back.centerx - bf.get_width() // 2,
+                       back.centery - bf.get_height() // 2))
+
+        # Tabs.
+        for key, rect, label in (
+            ("glyphs", layout["tab_glyphs"], "GLYPHS"),
+            ("bosses", layout["tab_bosses"], "BOSSES"),
+        ):
+            active = self._codex_tab == key
+            bg = (60, 60, 100) if active else (28, 28, 48)
+            border = ACCENT_GOLD if active else (90, 90, 130)
+            pygame.draw.rect(surf, bg, rect, border_radius=8)
+            pygame.draw.rect(surf, border, rect, 2, border_radius=8)
+            ts = pygame.font.SysFont("consolas", 22, bold=True).render(
+                label, True, ACCENT_GOLD if active else TEXT_SUB,
+            )
+            surf.blit(ts, (rect.centerx - ts.get_width() // 2,
+                           rect.centery - ts.get_height() // 2))
+
+        # Per-entry chips.
+        if self._codex_tab == "glyphs":
+            for name, rect in layout["chips"]:
+                count = 0  # codex is meta — no stack count
+                draw_joker_chip(surf, name, count, rect.x, rect.y, rect.w, rect.h)
+        else:
+            from config.bosses import BOSS_MAP
+            for name, rect in layout["chips"]:
+                # Boss "chip" — same dimensions, distinct red border to
+                # match the in-game BOSS banner colour.
+                pygame.draw.rect(surf, (35, 35, 60), rect, border_radius=6)
+                pygame.draw.rect(surf, ACCENT_RED, rect, 2, border_radius=6)
+                from renders.rendering import _wrap_lines
+                name_font = pygame.font.SysFont("sans-serif", 14, bold=True)
+                lines = _wrap_lines(name, name_font, rect.w - 8)
+                for li, line in enumerate(lines[:3]):
+                    ts = name_font.render(line, True, TEXT_COLOR)
+                    surf.blit(ts, (rect.x + 6,
+                                   rect.y + 6 + li * name_font.get_linesize()))
+
+    def _draw_boss_inspect(self, surf) -> None:
+        """Boss inspect modal — opened from the codex's bosses tab.
+        Shows the boss's name, tagline, and mechanic description."""
+        name = self._inspecting_boss
+        from config.bosses import BOSS_MAP
+        boss = None
+        for b in BOSS_MAP.values():
+            if b.name == name:
+                boss = b
+                break
+        if boss is None:
+            self._inspecting_boss = None
+            return
+        try:
+            backdrop = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+            backdrop.fill((0, 0, 0, 170))
+            surf.blit(backdrop, (0, 0))
+        except Exception:
+            pass
+        rects = self._inspect_modal_rects()
+        panel = rects["panel"]
+        pygame.draw.rect(surf, (16, 16, 28), panel, border_radius=12)
+        pygame.draw.rect(surf, ACCENT_RED, panel, 2, border_radius=12)
+
+        # Close X.
+        close = rects["close"]
+        pygame.draw.rect(surf, (40, 40, 60), close, border_radius=6)
+        x_font = pygame.font.SysFont("consolas", 22, bold=True)
+        xs = x_font.render("x", True, TEXT_COLOR)
+        surf.blit(xs, (close.centerx - xs.get_width() // 2,
+                       close.centery - xs.get_height() // 2))
+
+        # "BOSS" eyebrow + name.
+        eye = pygame.font.SysFont("consolas", 16, bold=True).render(
+            "BOSS GAME", True, ACCENT_RED,
+        )
+        surf.blit(eye, (panel.centerx - eye.get_width() // 2, panel.top + 24))
+        name_font = pygame.font.SysFont("sans-serif", 34, bold=True)
+        ns = name_font.render(boss.name, True, ACCENT_GOLD)
+        surf.blit(ns, (panel.centerx - ns.get_width() // 2, panel.top + 56))
+
+        # Tagline.
+        tag_font = pygame.font.SysFont("sans-serif", 18, bold=False)
+        tg = tag_font.render(boss.tagline, True, TEXT_SUB)
+        surf.blit(tg, (panel.centerx - tg.get_width() // 2, panel.top + 108))
+
+        # Mechanic label.
+        mech_font = pygame.font.SysFont("consolas", 14)
+        mt = mech_font.render(f"mechanic: {boss.mechanic}", True, (160, 160, 200))
+        surf.blit(mt, (panel.centerx - mt.get_width() // 2, panel.top + 142))
+
+        # Description.
+        from renders.rendering import draw_centered_multiline_text
+        desc_font = pygame.font.SysFont("sans-serif", 20)
+        draw_centered_multiline_text(
+            surf, boss.desc or "", desc_font, TEXT_COLOR,
+            panel.top + 180, max_width=panel.width - 48, max_lines=14,
+        )
+
+    def _sell_inspected_joker(self) -> None:
+        """Remove ONE copy of the inspected joker, credit 50% of its
+        cost. Closes the modal. Cursed Coin can't be sold."""
+        name = self._inspecting_joker
+        if not name or name == "Cursed Coin":
+            return
+        pl = self.engine.state
+        if name not in pl.player.passive_cards:
+            self._inspecting_joker = None
+            return
+        pl.player.tokens += self._joker_sell_price(name)
+        pl.player.passive_cards.remove(name)
+        # Re-seed upgrade counters since a passive card just left the
+        # build — otherwise old stack counts linger.
+        self.card_system.apply_passive_buffs(pl.player)
+        self._inspecting_joker = None
 
     def handle_motion(self, mx, my):
         self.hover_pos = None

@@ -30,6 +30,50 @@ def cached_alpha_rect(size: tuple[int, int], color_rgb: tuple[int, int, int],
     return surf
 
 
+# --- Static overlays --------------------------------------------------------
+#
+# Lazy module-level singletons so allocation happens once, not per frame.
+# `get_vignette` builds a soft radial darkening; `get_cell_shadow` adds the
+# subtle top-highlight / bottom-shadow that makes flat cells read as 3D.
+
+_VIGNETTE: pygame.Surface | None = None
+_CELL_SHADOW_CACHE: dict[int, pygame.Surface] = {}
+
+
+def get_vignette(w: int, h: int) -> pygame.Surface:
+    """A 720×1280 SRCALPHA surface darkening the corners. Built once and
+    reused; one blit per frame. Approximated with a handful of concentric
+    rounded rects to avoid expensive per-pixel work."""
+    global _VIGNETTE
+    if _VIGNETTE is not None and _VIGNETTE.get_size() == (w, h):
+        return _VIGNETTE
+    surf = pygame.Surface((w, h), pygame.SRCALPHA)
+    # Eight concentric inset rects, each adding ~10 alpha, gives a
+    # smooth-looking darken at the edges without per-pixel cost.
+    layers = 8
+    for i in range(layers):
+        inset = int((i / layers) * min(w, h) * 0.35)
+        rect = pygame.Rect(inset, inset, w - 2 * inset, h - 2 * inset)
+        alpha = 10  # cumulative across layers
+        pygame.draw.rect(surf, (0, 0, 0, alpha), rect, border_radius=24)
+    _VIGNETTE = surf
+    return surf
+
+
+def get_cell_shadow(cell_size: int) -> pygame.Surface:
+    """Cell-sized SRCALPHA overlay: 1-px lighter top edge + 1-px darker
+    bottom edge. Cached by cell size since grids resize between levels."""
+    surf = _CELL_SHADOW_CACHE.get(cell_size)
+    if surf is not None:
+        return surf
+    surf = pygame.Surface((cell_size, cell_size), pygame.SRCALPHA)
+    pygame.draw.line(surf, (255, 255, 255, 28), (2, 0), (cell_size - 3, 0), 1)
+    pygame.draw.line(surf, (0, 0, 0, 70), (2, cell_size - 1),
+                     (cell_size - 3, cell_size - 1), 1)
+    _CELL_SHADOW_CACHE[cell_size] = surf
+    return surf
+
+
 def draw_board(surface: pygame.Surface, board: Board, cell_size: int, offset_x: int, offset_y: int):
     """Draw the game board."""
     for r in range(board.size):
@@ -237,14 +281,23 @@ def draw_big_centered_text(surface, text, font, color, y):
 
 
 def draw_joker_chip(surface: pygame.Surface, name: str, count: int,
-                    x: int, y: int, w: int, h: int) -> None:
+                    x: int, y: int, w: int, h: int,
+                    glow: float = 0.0) -> None:
     """Compact card view used in the joker row. Shows the joker name (auto-
     wrapped to 2 lines) and an `xN` stack badge in the top-right when more
-    than one copy is owned."""
+    than one copy is owned. `glow` 0..1 brightens the border when the
+    joker's trigger just fired."""
     from config.constants import CARD_BG, CARD_BORDER
 
     pygame.draw.rect(surface, CARD_BG, (x, y, w, h), border_radius=6)
-    pygame.draw.rect(surface, ACCENT_GOLD, (x, y, w, h), 2, border_radius=6)
+    # Border colour modulates toward bright white when glow > 0.
+    border_col = (
+        int(ACCENT_GOLD[0] + (255 - ACCENT_GOLD[0]) * glow),
+        int(ACCENT_GOLD[1] + (255 - ACCENT_GOLD[1]) * glow),
+        int(ACCENT_GOLD[2] + (200 - ACCENT_GOLD[2]) * glow),
+    )
+    border_w = 2 + int(glow * 2)
+    pygame.draw.rect(surface, border_col, (x, y, w, h), border_w, border_radius=6)
 
     pad = 6
     name_font = pygame.font.SysFont("sans-serif", 14, bold=True)

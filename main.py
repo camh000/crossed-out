@@ -17,7 +17,7 @@ from config.bosses import BOSS_LIST
 from renders.rendering import (
     draw_card, draw_score, draw_tokens,
     draw_centered_text, draw_big_centered_text, draw_centered_multiline_text,
-    draw_joker_chip,
+    draw_joker_chip, get_vignette, get_cell_shadow,
 )
 
 
@@ -82,6 +82,10 @@ class GameEngine:
         # from `pygame.time.get_ticks() - self._result_anim_start`.
         self._result_anim_start: int | None = None
 
+        # Wall-clock anchor for the boss-intro entrance: title pops at
+        # 0 ms, name slides in at 150 ms, desc fades at 400 ms.
+        self._boss_intro_start: int | None = None
+
     def new_run(self):
         self.engine.start_new_run()
         # Fresh board for a fresh run — without this, growth from the
@@ -137,6 +141,7 @@ class GameEngine:
 
             pl.is_boss = True
             self.state = "boss_intro"
+            self._boss_intro_start = pygame.time.get_ticks()
         else:
             pl.ante_target = 0
             pl.is_boss = False
@@ -306,6 +311,8 @@ class GameEngine:
             else:
                 pl.draws_this_game += 1
                 pl.draw_multiplier *= 0.5
+                rows_before = self.board.rows
+                cols_before = self.board.cols
                 row_shift, col_shift = self.board.grow_row_and_column()
                 if row_shift or col_shift:
                     pl.player.cells_played = [
@@ -314,6 +321,12 @@ class GameEngine:
                     pl.player.blind_shot_marks = [
                         (r + row_shift, c + col_shift) for (r, c) in pl.player.blind_shot_marks
                     ]
+                # Identify the newly-added row and column index so the
+                # grid-grow animation can highlight those cells.
+                new_row_idx = 0 if row_shift == 1 else rows_before
+                new_col_idx = 0 if col_shift == 1 else cols_before
+                self.animator.start(f"grid_grow_row:{new_row_idx}", 500)
+                self.animator.start(f"grid_grow_col:{new_col_idx}", 500)
                 self.board.game_over = False
                 self.showing_result = False
                 pl.game_result = "draw"
@@ -403,6 +416,8 @@ class GameEngine:
     def draw(self):
         surf = pygame.display.get_surface()
         surf.fill(BG_COLOR)
+        # Soft radial darken at the screen edges — one cached blit.
+        surf.blit(get_vignette(SCREEN_W, SCREEN_H), (0, 0))
 
         pl = self.engine.state
 
@@ -440,16 +455,51 @@ class GameEngine:
 
         elif self.state == "boss_intro":
             boss = pl.current_boss
-            draw_big_centered_text(surf, "BOSS GAME", self.big_font, ACCENT_RED, 150)
-            draw_centered_text(surf, boss.name, pygame.font.SysFont("consolas", 36), ACCENT_GOLD, 260)
-            # boss.desc can run several lines long — wrap it to the canvas
-            # width so the screen doesn't truncate mid-sentence.
-            draw_centered_multiline_text(
-                surf, boss.desc, self.font, TEXT_SUB, 330,
-                max_width=SCREEN_W - 80,
+            # Staged entrance: title pops, name slides in from the left,
+            # description fades up. Eased windows off a single wall-clock
+            # anchor stamped when the boss_intro state was entered.
+            elapsed = (
+                pygame.time.get_ticks() - self._boss_intro_start
+                if self._boss_intro_start is not None else 9999
             )
-            cont = self.font.render("Click to continue", True, TEXT_SUB)
-            surf.blit(cont, (SCREEN_W // 2 - cont.get_width() // 2, SCREEN_H - 80))
+            title_t = max(0.0, min(1.0, elapsed / 250))
+            name_t = max(0.0, min(1.0, (elapsed - 150) / 350))
+            desc_t = max(0.0, min(1.0, (elapsed - 400) / 500))
+
+            # Title pop: scale 1.3 → 1.0 as title_t goes 0..1.
+            title_scale = 1.3 - 0.3 * (1 - (1 - title_t) ** 3)  # ease-out cubic
+            title_size = max(24, int(56 * title_scale))
+            title_font = pygame.font.SysFont("consolas", title_size)
+            title_surf = title_font.render("BOSS GAME", True, ACCENT_RED)
+            surf.blit(title_surf, (SCREEN_W // 2 - title_surf.get_width() // 2, 150))
+
+            # Name slide: x position interpolates from -200 to centered.
+            if name_t > 0:
+                name_font = pygame.font.SysFont("consolas", 36)
+                name_surf = name_font.render(boss.name, True, ACCENT_GOLD)
+                target_x = SCREEN_W // 2 - name_surf.get_width() // 2
+                eased = 1 - (1 - name_t) ** 3
+                slide_x = int(-200 + (target_x + 200) * eased)
+                surf.blit(name_surf, (slide_x, 260))
+
+            # Description fade-in via set_alpha on a solid surface
+            # (cheaper than SRCALPHA per-pixel under WASM).
+            if desc_t > 0:
+                from renders.rendering import _wrap_lines
+                desc_alpha = int(255 * desc_t)
+                lines = _wrap_lines(boss.desc, self.font, SCREEN_W - 80)
+                line_h = self.font.get_linesize()
+                for i, line in enumerate(lines[:6]):
+                    line_surf = self.font.render(line, True, TEXT_SUB)
+                    line_surf.set_alpha(desc_alpha)
+                    surf.blit(line_surf,
+                              (SCREEN_W // 2 - line_surf.get_width() // 2,
+                               330 + i * line_h))
+
+            # Continue prompt only after the entrance finishes.
+            if desc_t >= 1.0:
+                cont = self.font.render("Click to continue", True, TEXT_SUB)
+                surf.blit(cont, (SCREEN_W // 2 - cont.get_width() // 2, SCREEN_H - 80))
 
         elif self.state in ("countdown", "game"):
             # countdown for normal games
@@ -471,10 +521,13 @@ class GameEngine:
                 if self.draw_message_until and pygame.time.get_ticks() < self.draw_message_until
                 else None
             )
+            cell_shadow = get_cell_shadow(avail)
             for (r, c) in self.board.valid_cells:
                 x = off_x + c * avail
                 y = off_y + r * avail
                 pygame.draw.rect(surf, (28, 28, 48), (x, y, avail, avail), border_radius=4)
+                # 1-px top highlight / bottom shadow — cells feel pressed.
+                surf.blit(cell_shadow, (x, y))
 
                 # Empty poison cells get a green warning square even when
                 # nothing is placed yet, so the player can see the hazard.
@@ -543,12 +596,30 @@ class GameEngine:
                         wf = pygame.font.SysFont("consolas", 14).render(str(w), True, ACCENT_GOLD)
                         surf.blit(wf, (x + 4, y + 4))
 
-                # hover highlight
+                # hover highlight — pulses subtly so the player notices it.
                 if self.hover_pos == (r, c) and not self.showing_result:
-                    pygame.draw.rect(surf, ACCENT_GOLD, (x, y, avail, avail), 2, border_radius=4)
+                    import math as _math
+                    pulse = (1 + _math.sin(pygame.time.get_ticks() / 220.0)) / 2
+                    border_w = 2 + int(pulse * 2)
+                    pygame.draw.rect(surf, ACCENT_GOLD,
+                                     (x, y, avail, avail), border_w, border_radius=4)
                 # newly-added cell glow during the draw transition
                 if new_cell_glow == (r, c):
                     pygame.draw.rect(surf, ACCENT_GOLD, (x, y, avail, avail), 3, border_radius=4)
+                # grid-grow flash: cells in a newly-added row/col light up
+                # for ~500 ms so the player sees the board expanded.
+                row_anim = self.animator.eased(f"grid_grow_row:{r}")
+                col_anim = self.animator.eased(f"grid_grow_col:{c}")
+                grow_t = min(row_anim, col_anim) if row_anim < 1.0 or col_anim < 1.0 else 1.0
+                if grow_t < 1.0:
+                    fade = 1.0 - grow_t
+                    pygame.draw.rect(
+                        surf,
+                        (int(ACCENT_GOLD[0] * fade + 28 * (1 - fade)),
+                         int(ACCENT_GOLD[1] * fade + 28 * (1 - fade)),
+                         int(ACCENT_GOLD[2] * fade + 48 * (1 - fade))),
+                        (x, y, avail, avail), 2, border_radius=4,
+                    )
 
             # Line glow pass — draws a gold streak through each X line
             # the player just completed. The colour modulates between
@@ -786,7 +857,10 @@ class GameEngine:
                     card = get_by_name(name)
                     cost_val = card.cost if card else 0
                     cx = sx + i * (CARD_W + 12)
-                    cy = SCREEN_H // 2 - CARD_H // 2 - 20
+                    cy_base = SCREEN_H // 2 - CARD_H // 2 - 20
+                    # Hover lift — render the hovered card 8 px higher.
+                    lift = 8 if self.hover_pos == f"shop:{i}" else 0
+                    cy = cy_base - lift
                     draw_card(
                         surf, name, cost_val, card.desc if card else "",
                         cx, cy, CARD_W, CARD_H,
@@ -857,6 +931,12 @@ class GameEngine:
             return
 
         elif self.state == "boss_intro":
+            # If the entrance is still playing, the first click skips it.
+            if self._boss_intro_start is not None:
+                elapsed = pygame.time.get_ticks() - self._boss_intro_start
+                if elapsed < 900:
+                    self._boss_intro_start = pygame.time.get_ticks() - 900
+                    return
             pl.game_result = None
             self.showing_result = False
             # Note: pl.is_boss stays True — start_game set it because this
@@ -864,6 +944,7 @@ class GameEngine:
             # from every runtime check in evaluate_and_settle / rendering.
             self.countdown_start = pygame.time.get_ticks()
             self.state = "game"
+            self._boss_intro_start = None
 
         elif self.state == "gameover":
             b_w, b_h = 200, 50
@@ -1010,7 +1091,6 @@ class GameEngine:
         """Compact, read-only display of the player's owned jokers.
         Rendered at the bottom of the screen during gameplay and the shop.
         Empty slots up to `joker_cap` are dashed outlines."""
-        # Collect unique jokers preserving purchase order.
         unique: list[str] = []
         seen: set[str] = set()
         for name in pl.player.passive_cards:
@@ -1025,9 +1105,19 @@ class GameEngine:
             if i < len(unique):
                 name = unique[i]
                 count = pl.player.passive_cards.count(name)
-                draw_joker_chip(surf, name, count, x, JOKER_ROW_Y, JOKER_W, JOKER_H)
+                # Find any active joker_glow:Name:N for this joker and
+                # take the brightest (lowest eased value) — that's the
+                # most-recently-fired.
+                glow = 0.0
+                for anim_id in self.animator.entries:
+                    if anim_id.startswith(f"joker_glow:{name}:"):
+                        t = self.animator.eased(anim_id)
+                        if t < 1.0:
+                            glow = max(glow, 1.0 - t)
+                draw_joker_chip(
+                    surf, name, count, x, JOKER_ROW_Y, JOKER_W, JOKER_H, glow=glow,
+                )
             else:
-                # Empty slot — dashed outline.
                 pygame.draw.rect(
                     surf, (50, 50, 70),
                     (x, JOKER_ROW_Y, JOKER_W, JOKER_H), 1, border_radius=6,
@@ -1040,6 +1130,15 @@ class GameEngine:
             cell = self._cell_under(mx, my)
             if cell is not None:
                 self.hover_pos = cell
+        elif self.state == "shop" and self.shop_cards:
+            sx = (SCREEN_W - (len(self.shop_cards) * CARD_W + max(0, len(self.shop_cards) - 1) * 12)) // 2
+            cy = SCREEN_H // 2 - CARD_H // 2 - 20
+            for i in range(len(self.shop_cards)):
+                cx = sx + i * (CARD_W + 12)
+                # Hit-test against the lifted hover position too (cy - 8).
+                if cx <= mx <= cx + CARD_W and (cy - 8) <= my <= cy + CARD_H:
+                    self.hover_pos = f"shop:{i}"
+                    break
 
     async def run(self):
         # Async so the browser event loop can yield each frame under

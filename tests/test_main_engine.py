@@ -1288,3 +1288,81 @@ class TestBlindAI:
         # Blind boss.
         pl.current_boss = BOSS_MAP["blind"]
         assert engine._ai_fade_age() == BLIND_FADE_AGE
+
+
+class TestNewBosses:
+    """Smoke tests for the second-pass boss additions: tide, echo,
+    spotlight, inverse, taxman, vandal, twins, hourglass, quicksand,
+    hivemind. Each test exercises just the on/off behaviour — full
+    play simulation isn't tractable here."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_all_new_bosses_registered(self, mock_caption, mock_mode, mock_init):
+        from config.bosses import BOSS_MAP
+        for key in ("tide", "echo", "spotlight", "inverse", "taxman",
+                    "vandal", "twins", "hourglass", "quicksand", "hivemind"):
+            assert key in BOSS_MAP, f"{key} boss missing"
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_taxman_drains_token_on_player_move(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        engine.start_game()
+        engine.state = "game"
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["taxman"]
+        pl.player.tokens = 5
+        avail, off_x, off_y = engine._board_layout()
+        mx = off_x + 0 * avail + avail // 2
+        my = off_y + 0 * avail + avail // 2
+        engine.handle_click(mx, my, 1)
+        assert pl.player.tokens == 4
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_inverse_scores_centre_line_negative(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        engine.board.reset(3)
+        # X line down the middle row — passes through centre (1, 1).
+        engine.board.grid[1] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["inverse"]
+        engine.evaluate_and_settle()
+        # Inverse flips the line's contribution negative → ink ≤ 0 →
+        # total clamps to 0. The line still counts for the line-based
+        # outcome decision (so this isn't a "lose" per se), but the
+        # ink reward is zeroed.
+        assert pl.last_total == 0
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_spotlight_only_zone_lines_score(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        engine.board.reset(5)
+        # X line in row 0 cols 0-2; if Spotlight zone anchored at (2,2)
+        # it's outside the zone and shouldn't score.
+        for c in range(3):
+            engine.board.grid[0][c] = PLAYER_X
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["spotlight"]
+        engine._spotlight_anchor = (2, 2)
+        result = engine.evaluate_and_settle()
+        assert pl.last_ink == 0  # line is outside the spotlight

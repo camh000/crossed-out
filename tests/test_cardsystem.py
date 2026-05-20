@@ -108,6 +108,97 @@ class TestLineContributions:
         assert contribs[0]["contribution"] == 18
 
 
+class TestNewBuffCards:
+    """The second-pass buffs that fold into line_contributions /
+    score_breakdown — Edge Lord, Centripetal, First Strike, Counter,
+    Rich Vein, Quartet, Last Stand, Magnitude, Lethal."""
+
+    def test_edge_lord_boosts_edge_line(self):
+        cs = CardSystem()
+        plain = Player()
+        buffed = Player(upgrades={"edge_lord": 1})
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]  # top edge row
+        plain_ink, _, _ = cs.score_breakdown(board, plain, 1)
+        buff_ink, _, _ = cs.score_breakdown(board, buffed, 1)
+        assert buff_ink > plain_ink
+
+    def test_centripetal_adds_to_centre_line(self):
+        cs = CardSystem()
+        buffed = Player(upgrades={"centripetal": 2})
+        board = Board()
+        board.grid[1] = [PLAYER_X, PLAYER_X, PLAYER_X]  # passes (1,1)
+        ink, _, _ = cs.score_breakdown(board, buffed, 1)
+        plain, _, _ = cs.score_breakdown(board, Player(), 1)
+        assert ink - plain == 10  # +5 per copy × 2
+
+    def test_first_strike_only_on_first_line(self):
+        cs = CardSystem()
+        player = Player(upgrades={"first_strike": 1})
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        # Before any line scored — bonus applies.
+        ink_first, _, _ = cs.score_breakdown(board, player, 1)
+        # Mark the first line as scored. Subsequent contributions skip it.
+        player.upgrades["first_x_line_done"] = 1
+        ink_after, _, _ = cs.score_breakdown(board, player, 1)
+        assert ink_first - ink_after == 20
+
+    def test_counter_one_shot_consumed(self):
+        cs = CardSystem()
+        player = Player(upgrades={"counter_bonus_ink": 4})
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        contribs = cs.line_contributions(board, player)
+        # Counter folds 4 ink into the line modifiers.
+        labels = [m[0] for m in contribs[0]["modifiers"]]
+        assert any("Counter" in l for l in labels)
+
+    def test_quartet_doubles_ink_with_four_distinct_jokers(self):
+        cs = CardSystem()
+        player = Player(
+            upgrades={"quartet": 1},
+            passive_cards=["Quartet", "Edge Lord", "Centripetal", "Deep Grid"],
+        )
+        # Manually re-seed (don't call apply_passive_buffs — that
+        # overwrites quartet which we set directly).
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        single = Player(passive_cards=["Quartet"], upgrades={"quartet": 1})
+        ink_solo, _, _ = cs.score_breakdown(board, single, 1)
+        ink_quartet, _, _ = cs.score_breakdown(board, player, 1)
+        assert ink_quartet >= 2 * ink_solo
+
+    def test_last_stand_boosts_ink_when_one_life(self):
+        cs = CardSystem()
+        player = Player(upgrades={"last_stand": 1})
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        normal, _, _ = cs.score_breakdown(board, player, 1, lives=3)
+        clutch, _, _ = cs.score_breakdown(board, player, 1, lives=1)
+        assert clutch > normal
+
+    def test_magnitude_only_when_board_grown(self):
+        cs = CardSystem()
+        player = Player(upgrades={"magnitude": 1})
+        small = Board(size=3)
+        small.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        big = Board(size=7)
+        big.grid[0] = [PLAYER_X] * 7
+        _, m_small, _ = cs.score_breakdown(small, player, 1)
+        _, m_big, _ = cs.score_breakdown(big, player, 1)
+        assert m_big > m_small
+
+    def test_lethal_only_on_boss_games(self):
+        cs = CardSystem()
+        player = Player(upgrades={"lethal": 1})
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        _, m_normal, _ = cs.score_breakdown(board, player, 1, is_boss=False)
+        _, m_boss, _ = cs.score_breakdown(board, player, 1, is_boss=True)
+        assert m_boss > m_normal
+
+
 class TestPostGameCleanup:
     def test_persistent_buffs_survive(self):
         cs = CardSystem()

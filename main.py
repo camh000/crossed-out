@@ -1,7 +1,7 @@
 import asyncio
 import pygame
 import random
-from game.board import Board, PLAYER_X, OPPONENT_O
+from game.board import Board, PLAYER_X, OPPONENT_O, EMPTY
 from game.opponent import OpponentAI
 from systems.animator import Animator
 from systems.cardsystem import CardSystem
@@ -86,6 +86,10 @@ class GameEngine:
         # 0 ms, name slides in at 150 ms, desc fades at 400 ms.
         self._boss_intro_start: int | None = None
 
+        # Per-boss scratch state. Reset in start_game.
+        self._spotlight_anchor: tuple[int, int] | None = None
+        self._tide_clear_deadlines: list[tuple[int, list[tuple[int, int]]]] = []
+
     def new_run(self):
         self.engine.start_new_run()
         # Fresh board for a fresh run — without this, growth from the
@@ -118,6 +122,17 @@ class GameEngine:
         # Re-seed every passive joker's stack into the upgrade counters.
         self.card_system.apply_passive_buffs(pl.player)
 
+        # Cursed Coin — drains 1 life every game start, per copy. The
+        # life is lost without animation (it's the price of the curse,
+        # not a defeat). If the curse drops you to zero, the game ends.
+        cursed = pl.player.upgrades.get("cursed_coin", 0)
+        if cursed > 0:
+            pl.lives = max(0, pl.lives - cursed)
+            if pl.lives <= 0:
+                self._pending_run_end = True
+                self.finish_run(won=False)
+                return
+
         # every 3rd game is a boss — set the boss state BEFORE firing
         # game-start triggers so on_game_start handlers see is_boss=True
         # (some triggers may want to behave differently in boss games).
@@ -125,7 +140,13 @@ class GameEngine:
             pl.boss_index = pl.games_in_level // 3 - 1
             boss = BOSS_LIST[pl.boss_index % len(BOSS_LIST)]
             pl.current_boss = boss
-            pl.ante_target = pl.get_ante_target()
+            base_ante = pl.get_ante_target()
+            # Shield — reduces the boss ante target by 20% per copy
+            # (multiplicative). Capped to at least 1.
+            shield = pl.player.upgrades.get("shield", 0)
+            if shield > 0:
+                base_ante = max(1, int(base_ante * (0.8 ** shield)))
+            pl.ante_target = base_ante
             self.engine.current_boss_mechanic = boss.mechanic
 
             # apply boss-specific setup
@@ -138,6 +159,13 @@ class GameEngine:
                 self.countdown_start = pygame.time.get_ticks()
             if boss.mechanic == "swap":
                 self.board.swap_counter = 0
+            if boss.mechanic == "spotlight":
+                self._spotlight_move()
+            else:
+                self._spotlight_anchor = None
+            # Reset Tide schedule + Hourglass counter on every boss start.
+            self._tide_clear_deadlines = []
+            pl.player.upgrades.pop("hourglass_counter", None)
 
             pl.is_boss = True
             self.state = "boss_intro"
@@ -232,17 +260,139 @@ class GameEngine:
         self._ai_move_at = None
         pl = self.engine.state
         before = self.board.move_count
-        ai = OpponentAI(self.board, fade_age=self._ai_fade_age())
-        move = ai.get_best_move()
-        if move:
-            self.board.place_at(move[0], move[1], OPPONENT_O)
+        # Boss-specific extra AI moves. Echo and Twins both run the AI
+        # an extra time on top of the normal move; Hivemind boosts the
+        # AI's tactical depth via fade_age=None even on Blind.
+        extras = 0
+        if pl.is_boss and pl.current_boss:
+            if pl.current_boss.mechanic in ("echo", "twins"):
+                extras = 1
+        for i in range(1 + extras):
+            ai = OpponentAI(self.board, fade_age=self._ai_fade_age())
+            if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "hivemind":
+                ai.difficulty = 1.0  # always-optimal heuristic
+            move = ai.get_best_move()
+            if move:
+                self.board.place_at(move[0], move[1], OPPONENT_O)
+                self.card_system.fire_ai_placed(self.board, pl.player, move[0], move[1])
         self._animate_new_marks(before_move_count=before)
+        # Vandal boss: erase a random non-edge X cell each AI turn.
+        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "vandal":
+            self._vandal_strike()
+        # Hourglass boss: every 4 AI moves, drop a wall on a random empty cell.
+        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "hourglass":
+            counter = pl.player.upgrades.get("hourglass_counter", 0) + 1
+            pl.player.upgrades["hourglass_counter"] = counter
+            if counter % 4 == 0:
+                self._hourglass_drop_wall()
+        # Quicksand boss: decay marks not reinforced by an adjacent same-side mark.
+        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "quicksand":
+            self._quicksand_tick()
+        # Tide boss: clear any cells whose erase deadline has passed.
+        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "tide":
+            self._tide_tick()
         # Poison ticks after the AI's turn — same as the old synchronous
         # flow, just deferred along with the move.
         if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "poison":
             self.board.tick_poison()
         if self._should_evaluate():
             self.evaluate_and_settle()
+
+    def _spotlight_move(self) -> None:
+        """Spotlight boss helper — pick a new random top-left anchor for
+        a 3x3 zone that fits inside the playable region."""
+        rows = [r for (r, _) in self.board.valid_cells]
+        cols = [c for (_, c) in self.board.valid_cells]
+        rmin, rmax = min(rows), max(rows)
+        cmin, cmax = min(cols), max(cols)
+        if rmax - rmin < 2 or cmax - cmin < 2:
+            self._spotlight_anchor = (rmin, cmin)
+            return
+        self._spotlight_anchor = (
+            random.randint(rmin, rmax - 2),
+            random.randint(cmin, cmax - 2),
+        )
+
+    def _spotlight_contains(self, line_cells) -> bool:
+        """True if every cell of the line is inside the active Spotlight."""
+        anchor = getattr(self, "_spotlight_anchor", None)
+        if anchor is None:
+            return True
+        ar, ac = anchor
+        for (r, c) in line_cells:
+            if not (ar <= r <= ar + 2 and ac <= c <= ac + 2):
+                return False
+        return True
+
+    def _board_centre(self) -> tuple[int, int]:
+        rows = [r for (r, _) in self.board.valid_cells]
+        cols = [c for (_, c) in self.board.valid_cells]
+        return ((min(rows) + max(rows)) // 2, (min(cols) + max(cols)) // 2)
+
+    def _vandal_strike(self) -> None:
+        """Vandal boss helper — erase one random non-edge X cell."""
+        rows = [r for (r, _) in self.board.valid_cells]
+        cols = [c for (_, c) in self.board.valid_cells]
+        rmin, rmax = min(rows), max(rows)
+        cmin, cmax = min(cols), max(cols)
+        candidates = [
+            (r, c) for (r, c) in self.board.valid_cells
+            if self.board.grid[r][c] == PLAYER_X
+            and r not in (rmin, rmax) and c not in (cmin, cmax)
+        ]
+        if not candidates:
+            return
+        victim = random.choice(candidates)
+        self.board.remove_at(victim[0], victim[1])
+        self.animator.start(f"mark:{victim[0]},{victim[1]}", 200)
+
+    def _hourglass_drop_wall(self) -> None:
+        """Hourglass boss — random empty cell becomes a wall."""
+        empty = [p for p in self.board.get_empty_cells() if p not in self.board.wall_cells]
+        if not empty:
+            return
+        target = random.choice(empty)
+        self.board.wall_cells.append(target)
+        self.animator.start(f"grid_grow_row:{target[0]}", 400)
+
+    def _quicksand_tick(self) -> None:
+        """Quicksand boss — every cell that's stayed N=3 turns without an
+        adjacent same-side neighbour is erased."""
+        for (r, c) in list(self.board.valid_cells):
+            val = self.board.grid[r][c]
+            if val == EMPTY:
+                continue
+            placed = self.board.placed_at[r][c]
+            if placed < 0 or self.board.move_count - placed < 3:
+                continue
+            same_neighbour = False
+            for dr in (-1, 0, 1):
+                for dc in (-1, 0, 1):
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r + dr, c + dc
+                    if (nr, nc) in self.board.valid_cells and self.board.grid[nr][nc] == val:
+                        same_neighbour = True
+                        break
+                if same_neighbour:
+                    break
+            if not same_neighbour:
+                self.board.remove_at(r, c)
+
+    def _tide_tick(self) -> None:
+        """Tide boss — any cell on a completed line scheduled for erasure
+        clears once its deadline arrives. The deadlines are stored on
+        `self._tide_clear_deadlines` as a list of (move_count, [cells])."""
+        deadline_list = getattr(self, "_tide_clear_deadlines", [])
+        keep: list = []
+        for (when, cells) in deadline_list:
+            if self.board.move_count >= when:
+                for (r, c) in cells:
+                    if (r, c) in self.board.valid_cells and self.board.grid[r][c] != EMPTY:
+                        self.board.remove_at(r, c)
+            else:
+                keep.append((when, cells))
+        self._tide_clear_deadlines = keep
 
     def _ai_fade_age(self) -> int | None:
         """The Blind boss is symmetric — the AI sees the same faded board
@@ -277,11 +427,26 @@ class GameEngine:
             self._animate_jokers(fired)
         self._animate_new_marks(before_move_count=before_marks)
 
+        # Bump the per-game X-line count BEFORE scoring so Crescendo
+        # (Mult +0.2 per line scored this game) reflects the current
+        # round's lines, and First Strike's "first line" flag flips
+        # AFTER this evaluation.
+        boss_mech = pl.current_boss.mechanic if pl.current_boss else None
+        spotlight = self._spotlight_anchor if boss_mech == "spotlight" else None
+        centre = self._board_centre() if boss_mech == "inverse" else None
+        x_line_count = sum(1 for (v, _) in self.board.get_lines() if v == PLAYER_X)
+        pl.player.upgrades["lines_scored"] = (
+            pl.player.upgrades.get("lines_scored", 0) + x_line_count
+        )
+
         # Single ink × mult scoring pass for the current board state.
         ink, mult, total = self.card_system.score_breakdown(
             self.board, pl.player, pl.get_multiplier(),
             is_boss=is_boss,
-            boss_mechanic=pl.current_boss.mechanic if pl.current_boss else None,
+            boss_mechanic=boss_mech,
+            spotlight_zone=spotlight,
+            centre=centre,
+            lives=pl.lives,
         )
         pl.last_ink = ink
         pl.last_mult = mult
@@ -295,8 +460,14 @@ class GameEngine:
         pl.last_line_contributions = self.card_system.line_contributions(
             self.board, pl.player,
             is_boss=is_boss,
-            boss_mechanic=pl.current_boss.mechanic if pl.current_boss else None,
+            boss_mechanic=boss_mech,
+            spotlight_zone=spotlight,
+            centre=centre,
         )
+        # First Strike: flip the "first X line scored" flag after this
+        # evaluation so subsequent games stop applying the +20 bonus.
+        if x_line_count > 0:
+            pl.player.upgrades["first_x_line_done"] = 1
         pl.score_this_game += total
         pl.player.score += total
         pl.total_score += total
@@ -360,15 +531,29 @@ class GameEngine:
             token_bonus_stacks = pl.player.upgrades.get("token_bonus", 0)
             pl.player.tokens += max(1, round(base_reward * pl.draw_multiplier))
             pl.player.tokens += 3 * token_bonus_stacks
+            # Vampire: +N tokens paid on win, accumulated over AI moves.
+            vamp = pl.player.upgrades.get("vampire_tokens", 0)
+            if vamp:
+                pl.player.tokens += vamp
+            # Pacifist: +2 tokens if you destroyed ZERO O's this game.
+            pacifist = pl.player.upgrades.get("pacifist", 0)
+            if pacifist > 0 and pl.player.upgrades.get("os_destroyed", 0) == 0:
+                pl.player.tokens += 2 * pacifist
             pl.draw_multiplier = 1.0
         else:  # lose
             pl.draw_multiplier = 1.0
-            # The pip we're about to lose: index of the rightmost still-
-            # filled pip BEFORE we decrement. That's the one the player
-            # watches go out.
-            lost_pip_idx = pl.lives - 1
-            pl.lives -= 1
-            self.animator.start(f"life_lost:{lost_pip_idx}", 500)
+            # Patience: if a game ends with the board full and you
+            # scored zero X lines, gain a life back. Caps at max_lives.
+            patience = pl.player.upgrades.get("patience", 0)
+            zero_lines = sum(
+                1 for (v, _) in self.board.get_lines() if v == PLAYER_X
+            ) == 0
+            if patience > 0 and zero_lines and pl.lives < pl.max_lives:
+                pl.lives += 1
+            else:
+                lost_pip_idx = pl.lives - 1
+                pl.lives -= 1
+                self.animator.start(f"life_lost:{lost_pip_idx}", 500)
 
         pl.game_result = outcome
         self.showing_result = True
@@ -391,7 +576,16 @@ class GameEngine:
 
         # Run-ending failure modes — ante failure on a boss, or zero lives.
         if ante_failed or pl.lives <= 0:
-            self._pending_run_end = True
+            # Phoenix: first time per run that we'd lose, restore a life.
+            if (
+                pl.player.upgrades.get("phoenix", 0) > 0
+                and not pl.phoenix_used
+                and pl.lives <= 0
+            ):
+                pl.phoenix_used = True
+                pl.lives = 1
+            else:
+                self._pending_run_end = True
         return outcome
 
     def _normal_outcome(self) -> str:
@@ -1100,12 +1294,19 @@ class GameEngine:
                     # directly. Poison TICK happens later, after the AI
                     # responds; only the REGISTER happens here.
                     if pl.is_boss and pl.current_boss:
-                        if pl.current_boss.mechanic == "swap" and self.board.move_count % 3 == 0:
+                        bm = pl.current_boss.mechanic
+                        if bm == "swap" and self.board.move_count % 3 == 0:
                             self.board.apply_swap()
-                        if pl.current_boss.mechanic == "timed":
+                        if bm == "timed":
                             self.countdown_start = pygame.time.get_ticks()
-                        if pl.current_boss.mechanic == "poison" and (row, col) in self.board.poison_cells:
+                        if bm == "poison" and (row, col) in self.board.poison_cells:
                             self.board.register_poison_hit(row, col, ttl=2)
+                        if bm == "taxman":
+                            # Drain 1 token per player turn during Tax Man.
+                            pl.player.tokens = max(0, pl.player.tokens - 1)
+                        if bm == "spotlight":
+                            # Roving zone re-anchors each player move.
+                            self._spotlight_move()
 
                     # Fire on_x_placed jokers (Ricochet, Overload). Any
                     # triggered placements bump move_count and stamp
@@ -1113,6 +1314,19 @@ class GameEngine:
                     fired = self.card_system.fire_x_placed(self.board, pl.player, row, col)
                     self._animate_new_marks(before_move_count=before_marks)
                     self._animate_jokers(fired)
+
+                    # Tide boss: every X line completed THIS turn is
+                    # scheduled for erasure in 1 AI move so the player
+                    # gets the score but loses the cells.
+                    if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "tide":
+                        new_lines = [
+                            cells for (val, cells) in self.board.get_lines()
+                            if val == PLAYER_X
+                        ]
+                        if new_lines:
+                            deadline = self.board.move_count + 1
+                            for line in new_lines:
+                                self._tide_clear_deadlines.append((deadline, list(line)))
 
                     # End immediately if the player just completed a line
                     # (or filled the last cell).
@@ -1155,8 +1369,11 @@ class GameEngine:
                         if len(pl.player.passive_cards) >= pl.joker_cap:
                             self.shop_full_flash_until = pygame.time.get_ticks() + 1200
                             break
-                        if pl.player.tokens >= card.cost:
-                            pl.player.tokens -= card.cost
+                        # Wholesaler — shop discount per copy, min cost 1.
+                        discount = pl.player.upgrades.get("shop_discount", 0)
+                        effective_cost = max(1 if card.cost > 0 else 0, card.cost - discount)
+                        if pl.player.tokens >= effective_cost:
+                            pl.player.tokens -= effective_cost
                             pl.player.passive_cards.append(card.name)
                             self.shop_cards.pop(i)
                         break

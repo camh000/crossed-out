@@ -58,6 +58,67 @@ BOSS_LIST: list[BossDef] = [
         "You have 5 seconds per move. If you don't act, the opponent claims a random empty cell for free.",
         "timed",
     ),
+    # --- Expanded boss pool ------------------------------------------------
+    BossDef(
+        "The Tide",
+        "Lines reform.",
+        "Every X line you complete erases itself one AI move later. You keep the ink but lose the cells.",
+        "tide",
+    ),
+    BossDef(
+        "Echo",
+        "Every move resounds.",
+        "Every time you place an X, the AI gets an extra O placement. Doubled response pressure.",
+        "echo",
+    ),
+    BossDef(
+        "Spotlight",
+        "Only the lit zone counts.",
+        "Only lines entirely inside a roving 3x3 zone score. The zone moves after every move you make.",
+        "spotlight",
+    ),
+    BossDef(
+        "Inverse",
+        "Centre lines hurt you.",
+        "Any X line passing through the centre cell scores NEGATIVE this round. Play to the edges.",
+        "inverse",
+    ),
+    BossDef(
+        "Tax Man",
+        "Tokens drain.",
+        "You lose one token every move you take this round. No board mechanic — just resource bleed.",
+        "taxman",
+    ),
+    BossDef(
+        "The Vandal",
+        "Marks vanish.",
+        "After every AI move, one random non-edge X cell on the board is erased.",
+        "vandal",
+    ),
+    BossDef(
+        "Twins",
+        "Two opponents.",
+        "Two AIs play O against you. Each player turn is answered by two O placements.",
+        "twins",
+    ),
+    BossDef(
+        "Hourglass",
+        "The board shrinks.",
+        "Every four AI moves, a random empty cell becomes a permanent wall.",
+        "hourglass",
+    ),
+    BossDef(
+        "Quicksand",
+        "Marks decay.",
+        "Any mark left for 3 moves with no adjacent same-side neighbour is erased.",
+        "quicksand",
+    ),
+    BossDef(
+        "Hivemind",
+        "The opponent sees ahead.",
+        "AI plays at 100% tactical strength — blocks every threat, never misplays.",
+        "hivemind",
+    ),
 ]
 
 

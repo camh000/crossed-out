@@ -1198,6 +1198,115 @@ class TestStagingSkip:
         assert engine.showing_result is False
 
 
+class TestJokerInspectAndSell:
+    """The joker row supports tap-to-inspect (a big card modal with the
+    full description) and a Sell button in the shop that refunds 50% of
+    the joker's cost. Cursed Coin can't be sold."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_tap_joker_chip_opens_modal(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        pl.player.passive_cards = ["Point Multiplier"]
+        engine.state = "game"
+        # Click on the first joker chip — should open inspect modal.
+        rects = engine._joker_row_rects(pl)
+        assert len(rects) == 1
+        name, rect = rects[0]
+        engine.handle_click(rect.centerx, rect.centery, 1)
+        assert engine._inspecting_joker == "Point Multiplier"
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_outside_click_closes_modal(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        engine.engine.state.player.passive_cards = ["Point Multiplier"]
+        engine.state = "game"
+        engine._inspecting_joker = "Point Multiplier"
+        # Click well outside the modal area (top-left corner).
+        engine.handle_click(5, 5, 1)
+        assert engine._inspecting_joker is None
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_sell_refunds_half_cost(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        pl.player.passive_cards = ["Point Multiplier"]  # cost 5
+        pl.player.tokens = 0
+        engine.state = "shop"
+        engine._inspecting_joker = "Point Multiplier"
+        sell_rect = engine._inspect_modal_rects()["sell"]
+        engine.handle_click(sell_rect.centerx, sell_rect.centery, 1)
+        # Cost 5 // 2 = 2.
+        assert pl.player.tokens == 2
+        assert "Point Multiplier" not in pl.player.passive_cards
+        assert engine._inspecting_joker is None
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_sell_only_in_shop(self, mock_caption, mock_mode, mock_init):
+        """A click on the same screen coordinates outside the shop
+        state should just close the modal — not credit any tokens."""
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        pl.player.passive_cards = ["Point Multiplier"]
+        pl.player.tokens = 0
+        engine.state = "game"
+        engine._inspecting_joker = "Point Multiplier"
+        sell_rect = engine._inspect_modal_rects()["sell"]
+        engine.handle_click(sell_rect.centerx, sell_rect.centery, 1)
+        assert pl.player.tokens == 0
+        assert "Point Multiplier" in pl.player.passive_cards
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_cursed_coin_cannot_be_sold(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        pl.player.passive_cards = ["Cursed Coin"]
+        pl.player.tokens = 0
+        engine.state = "shop"
+        engine._inspecting_joker = "Cursed Coin"
+        sell_rect = engine._inspect_modal_rects()["sell"]
+        engine.handle_click(sell_rect.centerx, sell_rect.centery, 1)
+        # Modal dismissed but the joker stays and no tokens credited.
+        assert pl.player.tokens == 0
+        assert "Cursed Coin" in pl.player.passive_cards
+
+    def test_sell_price_is_half_rounded_down(self):
+        from main import GameEngine
+        from unittest.mock import patch
+        with patch('pygame.init'), patch('pygame.display.set_mode'), patch('pygame.display.set_caption'):
+            engine = GameEngine()
+        # Spot-check a few representative cards.
+        assert engine._joker_sell_price("Point Multiplier") == 2   # 5 // 2
+        assert engine._joker_sell_price("Quick Draw") == 0          # 1 // 2
+        assert engine._joker_sell_price("Cursed Coin") == 0         # 0 // 2
+        assert engine._joker_sell_price("Final Count") == 3         # 6 // 2
+
+
 class TestBlindAI:
     """The AI is symmetrically blind during Blind boss games: it reads
     the same faded grid the player sees, so faded threats are invisible

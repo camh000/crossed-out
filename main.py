@@ -90,6 +90,11 @@ class GameEngine:
         self._spotlight_anchor: tuple[int, int] | None = None
         self._tide_clear_deadlines: list[tuple[int, list[tuple[int, int]]]] = []
 
+        # Joker inspect modal — when set to a card name, draw() paints a
+        # large card view over everything. In the shop state the modal
+        # also shows a "Sell" button.
+        self._inspecting_joker: str | None = None
+
     def new_run(self):
         self.engine.start_new_run()
         # Fresh board for a fresh run — without this, growth from the
@@ -1195,10 +1200,33 @@ class GameEngine:
             btn_txt = self.font.render("MAIN MENU", True, (0, 0, 0))
             surf.blit(btn_txt, (btn.centerx - btn_txt.get_width() // 2, btn.centery - btn_txt.get_height() // 2))
 
+        # Joker inspect modal — drawn last so it sits above every other UI.
+        self._draw_inspect_modal(surf, pl)
+
         pygame.display.flip()
 
     def handle_click(self, mx, my, mouse_btn):
         pl = self.engine.state
+
+        # Joker inspect modal takes priority over every state-specific
+        # handler. The Sell button is the only interactive zone inside
+        # the modal panel; everything else dismisses it.
+        if self._inspecting_joker:
+            rects = self._inspect_modal_rects()
+            if (self.state == "shop"
+                    and self._inspecting_joker != "Cursed Coin"
+                    and rects["sell"].collidepoint(mx, my)):
+                self._sell_inspected_joker()
+            else:
+                self._inspecting_joker = None
+            return
+
+        # Joker row taps in playable / shop states open the inspect modal.
+        if self.state in ("game", "shop"):
+            for name, rect in self._joker_row_rects(pl):
+                if rect.collidepoint(mx, my):
+                    self._inspecting_joker = name
+                    return
 
         if self.state == "menu":
             btn = pygame.Rect(SCREEN_W // 2 - 160, SCREEN_H // 2 - 30, 320, 60)
@@ -1402,6 +1430,44 @@ class GameEngine:
         elif self.state == "gameover":
             self.state = "menu"
 
+    def _joker_sell_price(self, name: str) -> int:
+        """Sell price for a joker — 50% of cost, rounded down. Sacrifice
+        (cost -1) and any other free/refunding card sells for 0."""
+        card = get_by_name(name)
+        if card is None:
+            return 0
+        return max(0, card.cost // 2)
+
+    def _joker_row_rects(self, pl) -> list[tuple[str, pygame.Rect]]:
+        """Hit rects for each owned joker in the row. Used by the click
+        handler to detect taps that open the inspect modal."""
+        unique: list[str] = []
+        seen: set[str] = set()
+        for name in pl.player.passive_cards:
+            if name not in seen:
+                unique.append(name)
+                seen.add(name)
+        slots = pl.joker_cap
+        total_w = slots * JOKER_W + (slots - 1) * JOKER_GAP
+        start_x = (SCREEN_W - total_w) // 2
+        rects: list[tuple[str, pygame.Rect]] = []
+        for i, name in enumerate(unique):
+            x = start_x + i * (JOKER_W + JOKER_GAP)
+            rects.append((name, pygame.Rect(x, JOKER_ROW_Y, JOKER_W, JOKER_H)))
+        return rects
+
+    def _inspect_modal_rects(self) -> dict[str, pygame.Rect]:
+        """Layout rects for the joker inspect modal. Single source of
+        truth shared between draw() and the click handler."""
+        w, h = 480, 600
+        x = (SCREEN_W - w) // 2
+        y = (SCREEN_H - h) // 2
+        return {
+            "panel": pygame.Rect(x, y, w, h),
+            "sell": pygame.Rect(x + 40, y + h - 80, w - 80, 56),
+            "close": pygame.Rect(x + w - 56, y + 12, 40, 40),
+        }
+
     def _draw_joker_row(self, surf, pl):
         """Compact, read-only display of the player's owned jokers.
         Rendered at the bottom of the screen during gameplay and the shop.
@@ -1437,6 +1503,111 @@ class GameEngine:
                     surf, (50, 50, 70),
                     (x, JOKER_ROW_Y, JOKER_W, JOKER_H), 1, border_radius=6,
                 )
+
+    def _draw_inspect_modal(self, surf, pl) -> None:
+        """If a joker is being inspected, paint the modal: dark backdrop,
+        large card with full name + cost + description, and (in the shop
+        state) a Sell button. Click handling matches against the rects
+        from _inspect_modal_rects."""
+        if not self._inspecting_joker:
+            return
+        name = self._inspecting_joker
+        card = get_by_name(name)
+        if card is None:
+            self._inspecting_joker = None
+            return
+        # Dim the world behind the modal.
+        try:
+            backdrop = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+            backdrop.fill((0, 0, 0, 170))
+            surf.blit(backdrop, (0, 0))
+        except Exception:
+            pass
+
+        rects = self._inspect_modal_rects()
+        panel = rects["panel"]
+        pygame.draw.rect(surf, (16, 16, 28), panel, border_radius=12)
+        pygame.draw.rect(surf, ACCENT_GOLD, panel, 2, border_radius=12)
+
+        # Cost badge (top-left).
+        cost_r = 28
+        cx, cy = panel.left + 38, panel.top + 38
+        pygame.draw.circle(surf, ACCENT_GOLD, (cx, cy), cost_r)
+        cost_font = pygame.font.SysFont("consolas", 32, bold=True)
+        cs = cost_font.render(str(card.cost), True, (0, 0, 0))
+        surf.blit(cs, (cx - cs.get_width() // 2, cy - cs.get_height() // 2))
+
+        # Close X (top-right).
+        close = rects["close"]
+        pygame.draw.rect(surf, (40, 40, 60), close, border_radius=6)
+        x_font = pygame.font.SysFont("consolas", 22, bold=True)
+        xs = x_font.render("x", True, TEXT_COLOR)
+        surf.blit(xs, (close.centerx - xs.get_width() // 2,
+                       close.centery - xs.get_height() // 2))
+
+        # Name (centered, single line).
+        name_font = pygame.font.SysFont("sans-serif", 32, bold=True)
+        ns = name_font.render(name, True, ACCENT_GOLD)
+        surf.blit(ns, (panel.centerx - ns.get_width() // 2, panel.top + 82))
+
+        # Stack count subtitle.
+        count = pl.player.passive_cards.count(name)
+        sub_font = pygame.font.SysFont("sans-serif", 18)
+        sub_text = f"You own: {count}" + (f"x" if count > 1 else "")
+        ss = sub_font.render(sub_text, True, TEXT_SUB)
+        surf.blit(ss, (panel.centerx - ss.get_width() // 2, panel.top + 124))
+
+        # Trigger labels.
+        if card.triggers:
+            trig_font = pygame.font.SysFont("consolas", 14)
+            trig_text = "Triggers: " + ", ".join(
+                t.replace("on_", "") for t in card.triggers
+            )
+            ts = trig_font.render(trig_text, True, (160, 160, 200))
+            surf.blit(ts, (panel.centerx - ts.get_width() // 2, panel.top + 154))
+
+        # Description — wrapped, centered, generous width.
+        from renders.rendering import draw_centered_multiline_text
+        desc_font = pygame.font.SysFont("sans-serif", 20)
+        draw_centered_multiline_text(
+            surf, card.desc or "", desc_font, TEXT_COLOR,
+            panel.top + 196, max_width=panel.width - 48, max_lines=12,
+        )
+
+        # Sell button — only shown in the shop, and only if this joker is
+        # sellable. Cursed Coin specifically resists.
+        if self.state == "shop" and name != "Cursed Coin":
+            sell = rects["sell"]
+            price = self._joker_sell_price(name)
+            pygame.draw.rect(surf, ACCENT_RED, sell, border_radius=8)
+            pygame.draw.rect(surf, (255, 220, 220), sell, 2, border_radius=8)
+            label_font = pygame.font.SysFont("consolas", 22, bold=True)
+            label = label_font.render(f"SELL  +{price} tokens", True, (0, 0, 0))
+            surf.blit(label, (sell.centerx - label.get_width() // 2,
+                              sell.centery - label.get_height() // 2))
+        elif self.state == "shop" and name == "Cursed Coin":
+            # Make the curse explicit — no sell option.
+            warn_font = pygame.font.SysFont("consolas", 16, bold=True)
+            ws = warn_font.render("Cannot be sold", True, ACCENT_RED)
+            surf.blit(ws, (panel.centerx - ws.get_width() // 2,
+                           panel.bottom - 50))
+
+    def _sell_inspected_joker(self) -> None:
+        """Remove ONE copy of the inspected joker, credit 50% of its
+        cost. Closes the modal. Cursed Coin can't be sold."""
+        name = self._inspecting_joker
+        if not name or name == "Cursed Coin":
+            return
+        pl = self.engine.state
+        if name not in pl.player.passive_cards:
+            self._inspecting_joker = None
+            return
+        pl.player.tokens += self._joker_sell_price(name)
+        pl.player.passive_cards.remove(name)
+        # Re-seed upgrade counters since a passive card just left the
+        # build — otherwise old stack counts linger.
+        self.card_system.apply_passive_buffs(pl.player)
+        self._inspecting_joker = None
 
     def handle_motion(self, mx, my):
         self.hover_pos = None

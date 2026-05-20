@@ -3,13 +3,14 @@ import pygame
 import random
 from game.board import Board, PLAYER_X, OPPONENT_O
 from game.opponent import OpponentAI
+from systems.animator import Animator
 from systems.cardsystem import CardSystem
 from systems.roguelite import RogueliteEngine
 from save.savesetup import save_progression, get_unlocked_cards
 from config.constants import (
     SCREEN_W, SCREEN_H, BG_COLOR, TEXT_COLOR, TEXT_SUB,
     ACCENT_GOLD, ACCENT_GREEN, ACCENT_RED, COLOR_X, COLOR_O,
-    CARD_W, CARD_H,
+    CARD_W, CARD_H, AI_MOVE_DELAY_MS,
 )
 from config.cards import pick_random, get_by_name
 from config.bosses import BOSS_LIST
@@ -67,6 +68,13 @@ class GameEngine:
         # (zero lives or boss ante failure). The click-to-advance handler
         # checks this and routes to finish_run instead of the next game.
         self._pending_run_end = False
+
+        # Animation envelopes — polled by the renderer.
+        self.animator = Animator()
+
+        # When set, _tick_ai_move pops this and runs the AI's response
+        # to the player's last move. None means no AI move is pending.
+        self._ai_move_at: int | None = None
 
     def new_run(self):
         self.engine.start_new_run()
@@ -177,6 +185,26 @@ class GameEngine:
         if (r, c) in self.board.valid_cells:
             return (r, c)
         return None
+
+    def _tick_ai_move(self) -> None:
+        """Run the AI's response if one was scheduled and its delay has
+        elapsed. Called once per frame at the top of run()'s loop."""
+        if self._ai_move_at is None:
+            return
+        if pygame.time.get_ticks() < self._ai_move_at:
+            return
+        self._ai_move_at = None
+        pl = self.engine.state
+        ai = OpponentAI(self.board, fade_age=self._ai_fade_age())
+        move = ai.get_best_move()
+        if move:
+            self.board.place_at(move[0], move[1], OPPONENT_O)
+        # Poison ticks after the AI's turn — same as the old synchronous
+        # flow, just deferred along with the move.
+        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "poison":
+            self.board.tick_poison()
+        if self._should_evaluate():
+            self.evaluate_and_settle()
 
     def _ai_fade_age(self) -> int | None:
         """The Blind boss is symmetric — the AI sees the same faded board
@@ -692,6 +720,9 @@ class GameEngine:
                 if placed:
                     pl.player.cells_played.append((row, col))
 
+                    # Boss side-effects that follow the player's move
+                    # directly. Poison TICK happens later, after the AI
+                    # responds; only the REGISTER happens here.
                     if pl.is_boss and pl.current_boss:
                         if pl.current_boss.mechanic == "swap" and self.board.move_count % 3 == 0:
                             self.board.apply_swap()
@@ -709,23 +740,25 @@ class GameEngine:
                         self.evaluate_and_settle()
                         return
 
-                    # Quick Draw can skip the AI's response.
+                    # Quick Draw consumes a skip stack immediately so the
+                    # turn budget is honoured even though the AI move is
+                    # deferred to the next frame.
                     skip_stack = pl.player.upgrades.get("skip_opponent", 0)
                     if skip_stack > 0:
                         pl.player.upgrades["skip_opponent"] = skip_stack - 1
-                    else:
-                        ai = OpponentAI(self.board, fade_age=self._ai_fade_age())
-                        move = ai.get_best_move()
-                        if move:
-                            self.board.place_at(move[0], move[1], OPPONENT_O)
-
-                    # Poison ticks down after the AI takes its turn.
-                    if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "poison":
-                        self.board.tick_poison()
-
-                    if self._should_evaluate():
-                        self.evaluate_and_settle()
+                        # Quick Draw: AI skips this turn. Still tick poison
+                        # since the "AI turn" is conceptually elapsing.
+                        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "poison":
+                            self.board.tick_poison()
+                        if self._should_evaluate():
+                            self.evaluate_and_settle()
                         return
+
+                    # Otherwise schedule the AI's response — the per-frame
+                    # tick fires it after AI_MOVE_DELAY_MS so the player
+                    # sees their X land before the response.
+                    self._ai_move_at = pygame.time.get_ticks() + AI_MOVE_DELAY_MS
+                    return
 
         elif self.state == "shop":
             if self.shop_cards:
@@ -819,6 +852,11 @@ class GameEngine:
                     self.handle_motion(ev.pos[0], ev.pos[1])
                 elif ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                     self.handle_click(ev.pos[0], ev.pos[1], 1)
+
+            # Per-frame updates that don't depend on input: AI move
+            # scheduling, animation GC.
+            self._tick_ai_move()
+            self.animator.gc()
 
             self.draw()
             self.clock.tick(60)

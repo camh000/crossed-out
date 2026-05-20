@@ -1087,6 +1087,68 @@ class TestRunFailedReason:
         assert "Out of lives" in src
 
 
+class TestAIMoveScheduling:
+    """The AI's response is deferred by AI_MOVE_DELAY_MS so the player
+    sees their own X land before the opponent reacts. _tick_ai_move is
+    called at the top of each frame from run() and fires the deferred
+    move once the delay has elapsed."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_tick_ai_move_noop_when_unscheduled(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        engine._ai_move_at = None
+        # Should not raise, should not place anything.
+        engine._tick_ai_move()
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_tick_ai_move_waits_for_delay(self, mock_caption, mock_mode, mock_init):
+        """With the conftest pygame stub, get_ticks() returns 0. Setting
+        _ai_move_at into the future (1) means the tick should NOT fire;
+        setting it into the past (-1) means it SHOULD fire and clear."""
+        from main import GameEngine
+        engine = GameEngine()
+        engine.board.reset(3)
+        # Future deadline — no-op.
+        engine._ai_move_at = 1
+        engine._tick_ai_move()
+        assert engine._ai_move_at == 1
+        # Past deadline — fires and clears.
+        engine._ai_move_at = -1
+        engine._tick_ai_move()
+        assert engine._ai_move_at is None
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_player_click_schedules_ai_move(self, mock_caption, mock_mode, mock_init):
+        """A player click should NOT place an AI O in the same frame —
+        it should just schedule one."""
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        engine.start_game()
+        engine.state = "game"
+        avail, off_x, off_y = engine._board_layout()
+        mx = off_x + 1 * avail + avail // 2
+        my = off_y + 1 * avail + avail // 2
+        engine.handle_click(mx, my, 1)
+        # Player's X landed on (1, 1).
+        assert engine.board.grid[1][1] == PLAYER_X
+        # No AI O on the board yet — scheduled for the next frame.
+        assert all(
+            engine.board.grid[r][c] != OPPONENT_O
+            for r in range(3) for c in range(3)
+        )
+        assert engine._ai_move_at is not None
+
+
 class TestBlindAI:
     """The AI is symmetrically blind during Blind boss games: it reads
     the same faded grid the player sees, so faded threats are invisible

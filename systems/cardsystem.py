@@ -61,30 +61,73 @@ class CardSystem:
         player.blind_shot_marks = []
 
     # --- Trigger entry points --------------------------------------------
+    #
+    # Each fire_* returns the list of jokers whose handler produced an
+    # observable change. Callers (main.py) use the returned names to drive
+    # the joker-glow animation. The "did anything change" detection
+    # snapshots cheap board+player signals before and after each handler
+    # so we don't have to make every handler return a bool individually.
 
-    def fire_game_start(self, board, player: Player) -> None:
+    def fire_game_start(self, board, player: Player) -> list[str]:
+        fired: list[str] = []
         for name, stacks in self._stacks(player):
             handler = _GAME_START_HANDLERS.get(name)
-            if handler:
-                handler(board, player, stacks)
+            if handler is None:
+                continue
+            before = self._snapshot(board, player)
+            handler(board, player, stacks)
+            if self._snapshot(board, player) != before:
+                fired.append(name)
+        return fired
 
-    def fire_x_placed(self, board, player: Player, r: int, c: int) -> None:
+    def fire_x_placed(self, board, player: Player, r: int, c: int) -> list[str]:
+        fired: list[str] = []
         for name, stacks in self._stacks(player):
             handler = _X_PLACED_HANDLERS.get(name)
-            if handler:
-                handler(board, player, r, c, stacks)
+            if handler is None:
+                continue
+            before = self._snapshot(board, player)
+            handler(board, player, r, c, stacks)
+            if self._snapshot(board, player) != before:
+                fired.append(name)
+        return fired
 
-    def fire_line_completed(self, board, player: Player, line_cells) -> None:
+    def fire_line_completed(self, board, player: Player, line_cells) -> list[str]:
+        fired: list[str] = []
         for name, stacks in self._stacks(player):
             handler = _LINE_COMPLETE_HANDLERS.get(name)
-            if handler:
-                handler(board, player, line_cells, stacks)
+            if handler is None:
+                continue
+            before = self._snapshot(board, player)
+            handler(board, player, line_cells, stacks)
+            if self._snapshot(board, player) != before:
+                fired.append(name)
+        return fired
 
-    def fire_shop_open(self, player: Player) -> None:
+    def fire_shop_open(self, player: Player) -> list[str]:
+        fired: list[str] = []
         for name, stacks in self._stacks(player):
             handler = _SHOP_OPEN_HANDLERS.get(name)
-            if handler:
-                handler(player, stacks)
+            if handler is None:
+                continue
+            before = dict(player.upgrades)
+            handler(player, stacks)
+            if player.upgrades != before:
+                fired.append(name)
+        return fired
+
+    @staticmethod
+    def _snapshot(board, player: Player) -> tuple:
+        """Cheap fingerprint of state that on-board triggers might
+        change. Covers placements (move_count + grid hash), wall
+        additions (wall_cells length), and charge consumption (the
+        upgrades values that triggers decrement)."""
+        grid_hash = tuple(tuple(row) for row in board.grid)
+        upgrade_signal = (
+            player.upgrades.get("overload_charges", 0),
+            player.upgrades.get("skip_opponent", 0),
+        )
+        return (board.move_count, grid_hash, len(board.wall_cells), upgrade_signal)
 
     def try_sacrifice_save(self, board, player: Player) -> bool:
         """If the player owns Sacrifice and has charges left, consume one

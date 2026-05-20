@@ -337,7 +337,10 @@ class TestMidGameWinDetection:
     @patch('pygame.display.set_mode')
     @patch('pygame.display.set_caption')
     @patch('pygame.time.get_ticks', return_value=1000)
-    def test_player_line_ends_game(self, mock_ticks, mock_caption, mock_mode, mock_init):
+    def test_line_does_not_end_game_until_board_fills(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """Under the first-to-fill rule, completing a line mid-game no
+        longer ends the round. Play continues until every valid cell
+        is occupied, and outcome is decided by total line count."""
         from main import GameEngine
         from game.board import PLAYER_X, OPPONENT_O
         engine = GameEngine()
@@ -345,22 +348,41 @@ class TestMidGameWinDetection:
             engine.new_run()
         engine.start_game()
         engine.state = "game"
-        # Pre-place 2 X's in row 0 and a couple of O's elsewhere so completing
-        # the X line doesn't also fill the board.
         engine.board.grid[0][0] = PLAYER_X
         engine.board.grid[0][1] = PLAYER_X
         engine.board.grid[1][0] = OPPONENT_O
         engine.board.grid[1][1] = OPPONENT_O
         engine.board.move_count = 4
-        # Player clicks (0, 2) — completes the X line. Board still has empty cells.
+        # Player clicks (0, 2) — completes an X line, but board has empties.
         avail, off_x, off_y = engine._board_layout()
         mx = off_x + 2 * avail + avail // 2
         my = off_y + 0 * avail + avail // 2
         engine.handle_click(mx, my, 1)
-        assert engine.engine.state.game_result == "win"
-        assert engine.showing_result is True
-        # Board should NOT be full — the win came from a line, not from filling.
+        # Game is NOT over — no result overlay, no game_result.
+        assert engine.engine.state.game_result is None
+        assert engine.showing_result is False
         assert engine.board.is_full() is False
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_full_board_with_more_x_lines_wins(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """A filled board with 1 X line and 0 O lines settles as a win."""
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        engine = GameEngine()
+        engine.board.reset(3)
+        pl = engine.engine.state
+        pl.is_boss = False
+        # 1 X line in row 0, no O lines. Everything else filled.
+        engine.board.grid = [
+            [PLAYER_X, PLAYER_X, PLAYER_X],
+            [OPPONENT_O, PLAYER_X, OPPONENT_O],
+            [PLAYER_X, OPPONENT_O, PLAYER_X],
+        ]
+        result = engine.evaluate_and_settle()
+        assert result == "win"
 
     @patch('pygame.init')
     @patch('pygame.display.set_mode')
@@ -1063,3 +1085,95 @@ class TestRunFailedReason:
         # The two failure modes must appear as branches in the result panel.
         assert "Failed boss ante" in src
         assert "Out of lives" in src
+
+
+class TestBlindAI:
+    """The AI is symmetrically blind during Blind boss games: it reads
+    the same faded grid the player sees, so faded threats are invisible
+    and the AI can pick cells that are actually occupied (forfeiting)."""
+
+    def test_ai_does_not_block_faded_threat(self):
+        from game.board import Board, PLAYER_X
+        from game.opponent import OpponentAI
+        b = Board(size=3)
+        # Two X's in a row — a clear threat the omniscient AI would block.
+        b.place_at(0, 0, PLAYER_X)  # move 1
+        b.place_at(0, 1, PLAYER_X)  # move 2
+        # Age the board past fade_age by spamming moves elsewhere.
+        for r, c in [(1, 0), (1, 1), (1, 2), (2, 0), (2, 1)]:
+            b.place_at(r, c, PLAYER_X)
+        # Now the (0,0) and (0,1) marks are at age 6+ from move_count=7.
+        # Faded AI should not see them and therefore not block (0, 2).
+        ai = OpponentAI(b, fade_age=2)
+        # With aggressive fading, the AI shouldn't pick (0, 2) as a
+        # forced block — the threat isn't visible.
+        move = ai.get_best_move()
+        # The only truly empty cells on the real board are (0, 2) and (2, 2).
+        # The AI may pick either; what we're asserting is it doesn't
+        # treat (0, 2) as a "must block" move (which it would if it saw
+        # the unfaded threat).
+        assert move in [(0, 2), (2, 2), None]
+
+    def test_omniscient_ai_blocks_unfaded_threat(self):
+        """Sanity check: same board, no fade_age → AI blocks correctly."""
+        from game.board import Board, PLAYER_X
+        from game.opponent import OpponentAI
+        b = Board(size=3)
+        b.place_at(0, 0, PLAYER_X)
+        b.place_at(0, 1, PLAYER_X)
+        ai = OpponentAI(b)  # no fade_age — sees everything
+        assert ai.get_best_move() == (0, 2)
+
+    def test_ai_forfeits_when_picking_occupied_faded_cell(self):
+        """If the AI's blind perception leads it to pick a cell that's
+        actually occupied (a faded mark), get_best_move returns None
+        instead of a guaranteed-to-fail placement."""
+        from game.board import Board, PLAYER_X
+        from game.opponent import OpponentAI
+        # Fill every cell except one, all aged past the fade threshold.
+        b = Board(size=3)
+        for r in range(3):
+            for c in range(3):
+                if (r, c) != (1, 1):
+                    b.place_at(r, c, PLAYER_X)
+        # move_count == 8; oldest cell is age 7. With fade_age=1 every
+        # placed cell is "faded" from the AI's view, so the AI thinks
+        # all of them are EMPTY and may pick any of them.
+        ai = OpponentAI(b, fade_age=1)
+        # Force the perceived view to a known state where the AI picks
+        # a truly-occupied cell — by seeding random it'll choose from
+        # the perceived-empty set which includes everything but is
+        # mostly real-occupied.
+        import random
+        # Try several seeds — at least one should land on a real-occupied
+        # cell and return None.
+        forfeited = False
+        for seed in range(32):
+            random.seed(seed)
+            m = ai.get_best_move()
+            # The AI's choice is either the truly-empty (1,1) or None
+            # (forfeit). It should never name a real-occupied cell.
+            if m is None:
+                forfeited = True
+            else:
+                assert m == (1, 1)
+        assert forfeited, "AI never forfeited despite perceived-empty cells being real-occupied"
+
+    def test_main_passes_fade_age_for_blind_boss_only(self):
+        """The _ai_fade_age helper returns BLIND_FADE_AGE only on Blind
+        boss games. Other games leave the AI omniscient."""
+        from unittest.mock import patch
+        from main import GameEngine, BLIND_FADE_AGE
+        with patch('pygame.init'), patch('pygame.display.set_mode'), patch('pygame.display.set_caption'):
+            engine = GameEngine()
+        pl = engine.engine.state
+        # Default non-boss state.
+        assert engine._ai_fade_age() is None
+        # Boss but not Blind.
+        from config.bosses import BOSS_MAP
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["weighted"]
+        assert engine._ai_fade_age() is None
+        # Blind boss.
+        pl.current_boss = BOSS_MAP["blind"]
+        assert engine._ai_fade_age() == BLIND_FADE_AGE

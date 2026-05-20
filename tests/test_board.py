@@ -360,6 +360,53 @@ class TestPlacedAtAging:
         assert b.placed_at[1][1] == -1
 
 
+class TestVisibleGridView:
+    """Board.visible_grid_view(fade_age) returns a copy of `grid` with
+    cells aged past `fade_age` replaced by EMPTY. Used by the Blind boss
+    renderer AND the AI so both forget the same way."""
+
+    def test_unfaded_cells_keep_their_value(self):
+        from game.board import Board, PLAYER_X
+        b = Board()
+        b.place_at(1, 1, PLAYER_X)  # placed_at=1, move_count=1, age=0
+        view = b.visible_grid_view(fade_age=6)
+        assert view[1][1] == PLAYER_X
+
+    def test_faded_cells_become_empty(self):
+        from game.board import Board, PLAYER_X, EMPTY
+        b = Board()
+        b.place_at(0, 0, PLAYER_X)  # move 1
+        # Pump move_count up by 6 more placements.
+        b.place_at(0, 1, PLAYER_X)
+        b.place_at(0, 2, PLAYER_X)
+        b.place_at(1, 0, PLAYER_X)
+        b.place_at(1, 1, PLAYER_X)
+        b.place_at(1, 2, PLAYER_X)
+        b.place_at(2, 0, PLAYER_X)  # move 7
+        # (0,0) was placed at move 1; current move_count=7 → age 6.
+        view = b.visible_grid_view(fade_age=6)
+        assert view[0][0] == EMPTY
+        # The just-placed (2,0) at age 0 stays visible.
+        assert view[2][0] == PLAYER_X
+
+    def test_never_placed_cells_unchanged(self):
+        from game.board import Board, EMPTY
+        b = Board()
+        view = b.visible_grid_view(fade_age=1)
+        for r in range(3):
+            for c in range(3):
+                assert view[r][c] == EMPTY
+
+    def test_view_is_an_independent_copy(self):
+        from game.board import Board, PLAYER_X, EMPTY
+        b = Board()
+        b.place_at(0, 0, PLAYER_X)
+        view = b.visible_grid_view(fade_age=6)
+        view[0][0] = EMPTY
+        # Real grid not affected by mutating the view.
+        assert b.grid[0][0] == PLAYER_X
+
+
 class TestPoisonTTL:
     """Poison boss: a player mark on a poison cell is removed after two
     AI ticks via Board.tick_poison()."""

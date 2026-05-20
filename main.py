@@ -147,8 +147,15 @@ class GameEngine:
         # game-start triggers so on_game_start handlers see is_boss=True
         # (some triggers may want to behave differently in boss games).
         if pl.games_in_level % 3 == 0:
-            pl.boss_index = pl.games_in_level // 3 - 1
-            boss = BOSS_LIST[pl.boss_index % len(BOSS_LIST)]
+            # Per-run boss order is a shuffled list of mechanics. We walk
+            # it via boss_index which increments each boss encounter.
+            # The old code used (games_in_level // 3 - 1) which always
+            # evaluated to 0 since games_in_level resets per level, so
+            # the player only ever saw BOSS_LIST[0] — The Blind.
+            order = pl.boss_order or [b.mechanic for b in BOSS_LIST]
+            mechanic = order[pl.boss_index % len(order)]
+            pl.boss_index += 1
+            boss = next(b for b in BOSS_LIST if b.mechanic == mechanic)
             pl.current_boss = boss
             base_ante = pl.get_ante_target()
             # Shield — reduces the boss ante target by 20% per copy
@@ -206,8 +213,30 @@ class GameEngine:
         pl.player.upgrades["shop_offer_extra"] = 0
         self.card_system.fire_shop_open(pl.player)
         offer_count = 4 + pl.player.upgrades.get("shop_offer_extra", 0)
-        self.shop_cards = pick_random(offer_count)
+        self.shop_cards = self._sample_shop_offers(offer_count)
         self.state = "shop"
+
+    def _sample_shop_offers(self, count: int) -> list[str]:
+        """Pick `count` glyphs for the shop, biasing toward those the
+        player hasn't seen this run. Once every glyph has been offered
+        at least once, the seen set resets — so the bias never starves
+        a long run of new offers."""
+        pl = self.engine.state
+        all_names = [c.name for c in ALL_CARDS]
+        if not all_names:
+            return []
+        # If the seen-set has saturated, recycle so we keep biasing
+        # toward fresh-this-cycle picks instead of stalling.
+        if len(pl.seen_shop_offers) >= len(all_names):
+            pl.seen_shop_offers = set()
+        unseen = [n for n in all_names if n not in pl.seen_shop_offers]
+        seen = [n for n in all_names if n in pl.seen_shop_offers]
+        # Prefer unseen first, then top up from seen.
+        random.shuffle(unseen)
+        random.shuffle(seen)
+        picked = (unseen + seen)[:count]
+        pl.seen_shop_offers.update(picked)
+        return picked
 
     def finish_run(self, won: bool):
         save_progression(
@@ -1457,11 +1486,11 @@ class GameEngine:
                 if free > 0:
                     pl.player.upgrades["free_rerolls"] = free - 1
                     offer_count = 4 + pl.player.upgrades.get("shop_offer_extra", 0)
-                    self.shop_cards = pick_random(offer_count)
+                    self.shop_cards = self._sample_shop_offers(offer_count)
                 elif pl.player.tokens >= 2:
                     pl.player.tokens -= 2
                     offer_count = 4 + pl.player.upgrades.get("shop_offer_extra", 0)
-                    self.shop_cards = pick_random(offer_count)
+                    self.shop_cards = self._sample_shop_offers(offer_count)
 
             cont = pygame.Rect(SCREEN_W // 2 - 80, SCREEN_H - 100, 160, 50)
             if cont.collidepoint(mx, my):

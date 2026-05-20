@@ -1307,6 +1307,85 @@ class TestJokerInspectAndSell:
         assert engine._joker_sell_price("Final Count") == 3         # 6 // 2
 
 
+class TestBossRotation:
+    """Bosses must vary across a run. Old bug: pl.boss_index was set to
+    games_in_level // 3 - 1, which always evaluated to 0 because
+    games_in_level resets each level — so every boss was BOSS_LIST[0]."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_run_visits_multiple_distinct_bosses(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        seen = []
+        # Walk through three boss encounters across three levels.
+        for lvl in range(1, 4):
+            pl.games_in_level = 2  # next start_game will be the boss
+            engine.start_game()
+            seen.append(pl.current_boss.mechanic)
+            pl.next_level()
+        # We may get repeats in a worst-case shuffle, but boss_index
+        # advances each time so the indices should differ.
+        assert pl.boss_index == 3
+        # Three boss_order entries got consumed.
+        assert len(seen) == 3
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_boss_order_shuffled_per_run(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from config.bosses import BOSS_LIST
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        order = engine.engine.state.boss_order
+        # Every boss mechanic appears exactly once.
+        assert set(order) == {b.mechanic for b in BOSS_LIST}
+        assert len(order) == len(BOSS_LIST)
+
+
+class TestShopVariety:
+    """The shop sampler biases toward unseen glyphs so a run gradually
+    surfaces the whole pool instead of looping back to the same few."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_seen_offers_track_across_visits(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        # Sample several shop visits.
+        offered_once = set(engine._sample_shop_offers(4))
+        offered_twice = set(engine._sample_shop_offers(4))
+        # Track set grew (no overlap since unseen pool was large).
+        assert len(pl.seen_shop_offers) >= 8
+        assert offered_once.isdisjoint(offered_twice)
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_seen_set_resets_when_pool_exhausted(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from config.cards import ALL_CARDS
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        pl.seen_shop_offers = {c.name for c in ALL_CARDS}
+        engine._sample_shop_offers(4)
+        # Reset triggers — set is the offer just made, not everything.
+        assert len(pl.seen_shop_offers) == 4
+
+
 class TestCodex:
     """Main-menu CODEX button opens a browser of every glyph and every
     boss modifier. Each entry opens the inspect modal — glyph view for

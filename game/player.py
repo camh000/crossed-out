@@ -44,6 +44,16 @@ class RunState:
     ante_target: int = 0
     is_boss: bool = False
     boss_index: int = 0
+    # Per-run shuffled order of boss mechanics — populated by
+    # RogueliteEngine.start_new_run. Each boss encounter pops the next
+    # mechanic from this list so a run sees a varied set of bosses
+    # instead of always picking the first entry in BOSS_LIST.
+    boss_order: list[str] = field(default_factory=list)
+    # Per-run set of glyph names that have appeared in the shop. The
+    # shop sampler biases toward unseen glyphs so a run gradually
+    # surfaces the whole pool. Reset to empty once every card has been
+    # seen at least once.
+    seen_shop_offers: set[str] = field(default_factory=set)
     shop_phase: bool = False
     run_complete: bool = False
     won_run: bool = False

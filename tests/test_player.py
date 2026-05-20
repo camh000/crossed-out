@@ -12,26 +12,24 @@ class TestPlayer:
         p = Player()
         assert p.tokens == 0
         assert p.score == 0
-        assert p.deck == []
-        assert p.hand == []
         assert p.upgrades == {}
         assert p.cells_played == []
-        assert p.placed_on_turn == 0
-        assert p.can_play_card is True
+        assert p.passive_cards == []
+        assert p.blind_shot_marks == []
 
     def test_player_with_tokens(self):
         p = Player(tokens=10)
         assert p.tokens == 10
 
-    def test_player_adding_hand_card(self):
-        p = Player()
-        p.hand.append("Double Strike")
-        assert p.hand == ["Double Strike"]
-
     def test_player_upgrades_dict(self):
         p = Player()
         p.upgrades["diagonal_power"] = 1
         assert p.upgrades["diagonal_power"] == 1
+
+    def test_player_can_append_passive_card(self):
+        p = Player()
+        p.passive_cards.append("Point Multiplier")
+        assert p.passive_cards == ["Point Multiplier"]
 
 
 class TestRunState:
@@ -53,6 +51,7 @@ class TestRunState:
         assert rs.won_run is False
         assert rs.lives == 3
         assert rs.max_lives == 3
+        assert rs.joker_cap == 5
         assert rs.draws_this_game == 0
         assert rs.score_this_game == 0
         assert isinstance(rs.player, Player)
@@ -128,14 +127,14 @@ class TestRunState:
         assert rs.level == 3
 
     def test_next_level_from_3_no_score_complete(self):
-        rs = RunState(level=3, score_this_level=0, current_target=800)
+        rs = RunState(level=3, score_this_level=0, current_target=20)
         result = rs.next_level()
         assert result is False
         assert rs.run_complete is True
         assert rs.won_run is False
 
     def test_next_level_from_3_with_score_complete(self):
-        rs = RunState(level=3, score_this_level=800, current_target=800)
+        rs = RunState(level=3, score_this_level=20, current_target=20)
         result = rs.next_level()
         assert result is False
         assert rs.run_complete is True
@@ -152,10 +151,7 @@ class TestRunState:
         rs.is_boss = True
         rs.shop_phase = True
         rs.score_this_level = 10
-        rs.player.hand = ["Double Strike"]
         rs.player.cells_played = [(0, 0)]
-        rs.player.placed_on_turn = 1
-        rs.player.can_play_card = False
 
         rs.reset_level()
 
@@ -163,7 +159,4 @@ class TestRunState:
         assert rs.is_boss is False
         assert rs.shop_phase is False
         assert rs.score_this_level == 0
-        assert rs.player.hand == []
         assert rs.player.cells_played == []
-        assert rs.player.placed_on_turn == 0
-        assert rs.player.can_play_card is True

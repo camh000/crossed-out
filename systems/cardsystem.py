@@ -1,5 +1,7 @@
 import random
-from config.cards import pick_random, get_by_name
+from typing import Callable
+
+from config.cards import get_by_name
 from game.board import PLAYER_X, OPPONENT_O, EMPTY
 from game.player import Player
 
@@ -16,7 +18,7 @@ _PERSISTENT_UPGRADE_KEYS = {
     "board_control",
 }
 
-# Mapping from a persistent card name to the upgrade key it increments.
+# Pure scoring-buff jokers: name → upgrade key counted from passive_cards.
 _CARD_UPGRADE = {
     "Point Multiplier": "point_mult",
     "Diagonal Power": "diagonal_power",
@@ -29,37 +31,15 @@ _CARD_UPGRADE = {
 
 
 class CardSystem:
-    def __init__(self, hand_size: int = 3):
-        self.hand_size = hand_size
+    def __init__(self):
+        pass
 
-    def generate_deck(self) -> list[str]:
-        """Create a shuffled deck of 12 random cards."""
-        deck: list[str] = []
-        while len(deck) < 12:
-            for card in pick_random(20):
-                deck.append(card)
-                if len(deck) >= 12:
-                    break
-        return deck
-
-    def draw_hand(self, player: Player) -> list[str]:
-        """Top up the hand to hand_size (+ any extra_card_start upgrade),
-        drawing from the deck and reshuffling a fresh deck if it empties."""
-        target = self.hand_size + player.upgrades.get("extra_card_start", 0)
-        while len(player.hand) < target:
-            if not player.deck:
-                player.deck = self.generate_deck()
-            player.hand.append(player.deck.pop(0))
-        return player.hand
-
-    def can_play_card(self, player: Player, cost: int) -> bool:
-        effective_cost = cost + player.upgrades.get("sacrifice_penalty", 0)
-        return player.tokens >= max(effective_cost, cost)
+    # --- Joker state initialisation --------------------------------------
 
     def apply_passive_buffs(self, player: Player) -> None:
-        """Re-apply every persistent card in `player.passive_cards` to
-        `player.upgrades` as a stacked integer count. Call this at the
-        start of each game so the upgrade dict reflects the current build.
+        """Replay every passive joker in `player.passive_cards` into the
+        upgrade counters that the scoring loop reads. Also seeds per-game
+        consumable counters (sacrifice charges, AI-skip stacks).
         """
         for key in _PERSISTENT_UPGRADE_KEYS:
             player.upgrades.pop(key, None)
@@ -67,188 +47,68 @@ class CardSystem:
             key = _CARD_UPGRADE.get(name)
             if key:
                 player.upgrades[key] = player.upgrades.get(key, 0) + 1
+        # Per-game consumables — re-seeded each start.
+        player.upgrades["sacrifice_charges"] = player.passive_cards.count("Sacrifice")
+        player.upgrades["skip_opponent"] = 0  # Quick Draw repopulates on game start.
 
-    def apply_card(self, card_name: str, board, player: Player) -> bool:
-        """Apply a card's effect. Persistent buffs are appended to
-        `passive_cards` and reflected in `upgrades`. One-shot cards run
-        their immediate effect and don't persist."""
-        card = get_by_name(card_name)
-        if not card:
+    def post_game_cleanup(self, player: Player) -> None:
+        """Wipe per-game scratch state. Persistent buff stacks survive — they
+        get re-applied via `apply_passive_buffs` next game."""
+        one_shot_keys = ("skip_opponent", "sacrifice_charges")
+        for key in one_shot_keys:
+            player.upgrades.pop(key, None)
+        player.blind_shot_marks = []
+
+    # --- Trigger entry points --------------------------------------------
+
+    def fire_game_start(self, board, player: Player) -> None:
+        for name, stacks in self._stacks(player):
+            handler = _GAME_START_HANDLERS.get(name)
+            if handler:
+                handler(board, player, stacks)
+
+    def fire_x_placed(self, board, player: Player, r: int, c: int) -> None:
+        for name, stacks in self._stacks(player):
+            handler = _X_PLACED_HANDLERS.get(name)
+            if handler:
+                handler(board, player, r, c, stacks)
+
+    def fire_line_completed(self, board, player: Player, line_cells) -> None:
+        for name, stacks in self._stacks(player):
+            handler = _LINE_COMPLETE_HANDLERS.get(name)
+            if handler:
+                handler(board, player, line_cells, stacks)
+
+    def fire_shop_open(self, player: Player) -> None:
+        for name, stacks in self._stacks(player):
+            handler = _SHOP_OPEN_HANDLERS.get(name)
+            if handler:
+                handler(player, stacks)
+
+    def try_sacrifice_save(self, board, player: Player) -> bool:
+        """If the player owns Sacrifice and has charges left, consume one
+        charge and undo the last X placement. Returns True if the loss was
+        averted."""
+        if player.upgrades.get("sacrifice_charges", 0) <= 0:
             return False
-
-        if card.persistent:
-            player.passive_cards.append(card_name)
-            key = _CARD_UPGRADE.get(card_name)
-            if key:
-                player.upgrades[key] = player.upgrades.get(key, 0) + 1
-            return True
-
-        if card_name == "Double Strike":
-            return self._double_strike(board, player)
-        if card_name == "O Flipper":
-            return self._flip_opponent(board, player)
-        if card_name == "Cell Lock":
-            return self._lock_cell(board, player)
-        if card_name == "Reroll":
-            return self._reroll(player)
-        if card_name == "Blind Shot":
-            return self._blind_shot(board, player)
-        if card_name == "Card Draw":
-            target = self.hand_size + player.upgrades.get("extra_card_start", 0) + 2
-            while len(player.hand) < target:
-                if not player.deck:
-                    player.deck = self.generate_deck()
-                player.hand.append(player.deck.pop(0))
-            return True
-        if card_name == "Sacrifice":
-            return self._sacrifice(board, player)
-        if card_name == "Overload":
-            return self._overload(board, player)
-        if card_name == "Ghost Board":
-            return self._ghost_board(board, player)
-        if card_name == "Quick Draw":
-            player.upgrades["skip_opponent"] = player.upgrades.get("skip_opponent", 0) + 1
-            return True
-        if card_name == "Fortress":
-            return self._fortress(board, player)
-        if card_name == "Chain Reaction":
-            return self._chain_reaction(board, player)
-        if card_name == "Ricochet":
-            return self._ricochet(board, player)
-        return False
-
-    # --- one-shot action implementations --------------------------------
-
-    def _double_strike(self, board, player: Player) -> bool:
-        empty = board.get_empty_cells()
-        if len(empty) >= 2:
-            for r in range(board.size):
-                row_empty = [(r, c) for c in range(board.size) if (r, c) in empty]
-                if len(row_empty) >= 2:
-                    board.place_at(row_empty[0][0], row_empty[0][1], PLAYER_X)
-                    board.place_at(row_empty[1][0], row_empty[1][1], PLAYER_X)
-                    return True
-        return False
-
-    def _flip_opponent(self, board, player: Player) -> bool:
-        for r in range(board.size):
-            for c in range(board.size):
-                if board.grid[r][c] == OPPONENT_O:
-                    board.grid[r][c] = PLAYER_X
-                    return True
-        return False
-
-    def _lock_cell(self, board, player: Player) -> bool:
-        """Lock the geometric centre of the current playable region.
-        Uses the bounding-box centre rather than `board.size` so it lands on
-        an actual valid cell even after the board has grown via draws."""
-        if not board.valid_cells:
+        if not player.cells_played:
             return False
-        rows = [r for (r, _) in board.valid_cells]
-        cols = [c for (_, c) in board.valid_cells]
-        mid_r = (min(rows) + max(rows)) // 2
-        mid_c = (min(cols) + max(cols)) // 2
-        target = (mid_r, mid_c)
-        if target not in board.valid_cells:
-            empty = board.get_empty_cells()
-            if not empty:
-                return False
-            target = min(empty, key=lambda p: (p[0] - mid_r) ** 2 + (p[1] - mid_c) ** 2)
-        if target in board.wall_cells:
-            return False
-        board.wall_cells.append(target)
+        r, c = player.cells_played.pop()
+        board.remove_at(r, c)
+        player.upgrades["sacrifice_charges"] -= 1
         return True
 
-    def _reroll(self, player: Player) -> bool:
-        if player.hand:
-            player.deck.append(player.hand.pop())
-            self.draw_hand(player)
-            return True
-        return False
-
-    def _blind_shot(self, board, player: Player) -> bool:
-        """Place X on a random empty edge cell. If the cell ends up in a
-        completed X line, the scoring step doubles that line's ink."""
-        edges = [
-            (r, c) for r in range(board.size) for c in range(board.size)
-            if (r in (0, board.size - 1) or c in (0, board.size - 1)) and board.grid[r][c] == EMPTY
-        ]
-        if not edges:
-            return False
-        r, c = random.choice(edges)
-        if not board.place_at(r, c, PLAYER_X):
-            return False
-        player.cells_played.append((r, c))
-        player.blind_shot_marks.append((r, c))
-        return True
-
-    def _sacrifice(self, board, player: Player) -> bool:
-        if player.cells_played:
-            r, c = player.cells_played.pop()
-            board.remove_at(r, c)
-            return True
-        return False
-
-    def _overload(self, board, player: Player) -> bool:
-        if player.cells_played:
-            r, c = player.cells_played[-1]
-            for dr in (-1, 0, 1):
-                for dc in (-1, 0, 1):
-                    nr, nc = r + dr, c + dc
-                    if 0 <= nr < board.size and 0 <= nc < board.size:
-                        if board.grid[nr][nc] == OPPONENT_O:
-                            board.grid[nr][nc] = PLAYER_X
-        return True
-
-    def _ghost_board(self, board, player: Player) -> bool:
-        empty = board.get_empty_cells()
-        walls = random.sample(empty, min(3, len(empty)))
-        board.wall_cells = walls
-        return True
-
-    def _fortress(self, board, player: Player) -> bool:
-        """Lock a random empty cell as a permanent wall. Previously this
-        always picked the top-left empty cell (sorted[0]) which contradicts
-        the card description ('One random cell locked as wall forever')."""
-        empty = [pos for pos in board.get_empty_cells() if pos not in board.wall_cells]
-        if not empty:
-            return False
-        board.wall_cells.append(random.choice(empty))
-        return True
-
-    def _chain_reaction(self, board, player: Player) -> bool:
-        flipped = False
-        for val, cells in board.get_lines():
-            if val != PLAYER_X:
+    @staticmethod
+    def _stacks(player: Player):
+        """Yield (card_name, stack_count) once per unique card in the
+        passive_cards list. Iteration order matches first-purchase order
+        so triggers fire deterministically."""
+        seen: set[str] = set()
+        for name in player.passive_cards:
+            if name in seen:
                 continue
-            for r, c in cells:
-                for dr in (-1, 0, 1):
-                    for dc in (-1, 0, 1):
-                        if dr == 0 and dc == 0:
-                            continue
-                        nr, nc = r + dr, c + dc
-                        if 0 <= nr < board.size and 0 <= nc < board.size:
-                            if board.grid[nr][nc] == OPPONENT_O:
-                                board.grid[nr][nc] = PLAYER_X
-                                flipped = True
-        return flipped
-
-    def _ricochet(self, board, player: Player) -> bool:
-        edges = [
-            (r, c) for r in range(board.size) for c in range(board.size)
-            if (r in (0, board.size - 1) or c in (0, board.size - 1)) and board.grid[r][c] == 0
-        ]
-        if not edges:
-            return False
-        r, c = random.choice(edges)
-        if not board.place_at(r, c, PLAYER_X):
-            return False
-        player.cells_played.append((r, c))
-        opp_r, opp_c = board.size - 1 - r, board.size - 1 - c
-        if board.grid[opp_r][opp_c] == 0:
-            if board.place_at(opp_r, opp_c, PLAYER_X):
-                player.cells_played.append((opp_r, opp_c))
-        return True
+            seen.add(name)
+            yield name, player.passive_cards.count(name)
 
     # --- ink × mult scoring ---------------------------------------------
 
@@ -322,7 +182,6 @@ class CardSystem:
         return [cells for v, cells in board.get_lines() if v == val]
 
     def _line_base_ink(self, board, cells: list[tuple[int, int]]) -> int:
-        # weights default to all-1 unless the Weighted boss rolled values.
         try:
             weight_sum = sum(board.weights[r][c] for (r, c) in cells)
         except (IndexError, AttributeError):
@@ -368,11 +227,192 @@ class CardSystem:
                             return runs
         return runs
 
-    def post_game_cleanup(self, player: Player):
-        """Clear per-game scratch state. Persistent buffs survive — they
-        are re-applied at the next game start via apply_passive_buffs.
-        Only one-shot upgrade keys are removed here."""
-        one_shot_keys = ("skip_opponent",)
-        for key in one_shot_keys:
-            player.upgrades.pop(key, None)
-        player.blind_shot_marks = []
+
+# ---------------------------------------------------------------------------
+# Trigger handler implementations
+# ---------------------------------------------------------------------------
+
+def _is_edge(board, r: int, c: int) -> bool:
+    if not board.valid_cells:
+        return False
+    rows = [rr for (rr, _) in board.valid_cells]
+    cols = [cc for (_, cc) in board.valid_cells]
+    return r in (min(rows), max(rows)) or c in (min(cols), max(cols))
+
+
+def _board_centre(board) -> tuple[int, int]:
+    rows = [r for (r, _) in board.valid_cells]
+    cols = [c for (_, c) in board.valid_cells]
+    return (min(rows) + max(rows)) // 2, (min(cols) + max(cols)) // 2
+
+
+def _random_empty_cells(board, n: int) -> list[tuple[int, int]]:
+    empty = [
+        pos for pos in board.get_empty_cells()
+        if pos not in board.wall_cells
+    ]
+    if not empty:
+        return []
+    return random.sample(empty, min(n, len(empty)))
+
+
+# --- on_game_start ----------------------------------------------------------
+
+def _trigger_cell_lock_start(board, player: Player, stacks: int) -> None:
+    """First stack locks the centre cell. Additional stacks lock random
+    extra cells. Cells already locked are skipped."""
+    if stacks <= 0:
+        return
+    cr, cc = _board_centre(board)
+    target = (cr, cc)
+    if target not in board.valid_cells:
+        empty = board.get_empty_cells()
+        if not empty:
+            return
+        target = min(empty, key=lambda p: (p[0] - cr) ** 2 + (p[1] - cc) ** 2)
+    if target not in board.wall_cells:
+        board.wall_cells.append(target)
+    extra = stacks - 1
+    if extra > 0:
+        for pos in _random_empty_cells(board, extra):
+            if pos not in board.wall_cells:
+                board.wall_cells.append(pos)
+
+
+def _trigger_fortress_start(board, player: Player, stacks: int) -> None:
+    for pos in _random_empty_cells(board, stacks):
+        if pos not in board.wall_cells:
+            board.wall_cells.append(pos)
+
+
+def _trigger_ghost_board_start(board, player: Player, stacks: int) -> None:
+    for pos in _random_empty_cells(board, 3 * stacks):
+        if pos not in board.wall_cells:
+            board.wall_cells.append(pos)
+
+
+def _trigger_blind_shot_start(board, player: Player, stacks: int) -> None:
+    """Place stacks X's on random empty edges; track each as a 'blind
+    shot' mark so scoring doubles any winning line containing one."""
+    for _ in range(stacks):
+        edges = [
+            (r, c) for (r, c) in board.valid_cells
+            if _is_edge(board, r, c)
+            and board.grid[r][c] == EMPTY
+            and (r, c) not in board.wall_cells
+        ]
+        if not edges:
+            return
+        r, c = random.choice(edges)
+        if board.place_at(r, c, PLAYER_X):
+            player.cells_played.append((r, c))
+            player.blind_shot_marks.append((r, c))
+
+
+def _trigger_double_strike_start(board, player: Player, stacks: int) -> None:
+    """Place `stacks` free X's, one in each of `stacks` different rows
+    where an empty cell exists."""
+    placed_rows: set[int] = set()
+    remaining = stacks
+    for r in sorted({rr for (rr, _) in board.valid_cells}):
+        if remaining <= 0:
+            return
+        empties_in_row = [
+            (rr, cc) for (rr, cc) in board.get_empty_cells()
+            if rr == r and (rr, cc) not in board.wall_cells
+        ]
+        if not empties_in_row:
+            continue
+        rr, cc = random.choice(empties_in_row)
+        if board.place_at(rr, cc, PLAYER_X):
+            player.cells_played.append((rr, cc))
+            placed_rows.add(r)
+            remaining -= 1
+
+
+def _trigger_quick_draw_start(board, player: Player, stacks: int) -> None:
+    player.upgrades["skip_opponent"] = player.upgrades.get("skip_opponent", 0) + stacks
+
+
+# --- on_x_placed ------------------------------------------------------------
+
+def _trigger_ricochet_on_x(board, player: Player, r: int, c: int, stacks: int) -> None:
+    if not _is_edge(board, r, c):
+        return
+    rows = [rr for (rr, _) in board.valid_cells]
+    cols = [cc for (_, cc) in board.valid_cells]
+    rmin, rmax = min(rows), max(rows)
+    cmin, cmax = min(cols), max(cols)
+    opp = (rmax - (r - rmin), cmax - (c - cmin))
+    if opp == (r, c):
+        return
+    if opp not in board.valid_cells:
+        return
+    if board.grid[opp[0]][opp[1]] != EMPTY:
+        return
+    if opp in board.wall_cells:
+        return
+    if board.place_at(opp[0], opp[1], PLAYER_X):
+        player.cells_played.append(opp)
+
+
+def _trigger_overload_on_x(board, player: Player, r: int, c: int, stacks: int) -> None:
+    for dr in (-1, 0, 1):
+        for dc in (-1, 0, 1):
+            if dr == 0 and dc == 0:
+                continue
+            nr, nc = r + dr, c + dc
+            if (nr, nc) in board.valid_cells and board.grid[nr][nc] == OPPONENT_O:
+                board.grid[nr][nc] = EMPTY
+
+
+# --- on_line_completed ------------------------------------------------------
+
+def _trigger_chain_reaction_on_line(board, player: Player, line_cells, stacks: int) -> None:
+    for (r, c) in line_cells:
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue
+                nr, nc = r + dr, c + dc
+                if (nr, nc) in board.valid_cells and board.grid[nr][nc] == OPPONENT_O:
+                    board.grid[nr][nc] = PLAYER_X
+
+
+# --- on_shop_open -----------------------------------------------------------
+
+def _trigger_reroll_free(player: Player, stacks: int) -> None:
+    player.upgrades["free_rerolls"] = player.upgrades.get("free_rerolls", 0) + stacks
+
+
+def _trigger_extra_offer(player: Player, stacks: int) -> None:
+    player.upgrades["shop_offer_extra"] = player.upgrades.get("shop_offer_extra", 0) + stacks
+
+
+# ---------------------------------------------------------------------------
+# Dispatch tables — name → handler. Kept at module bottom so handler
+# functions are already defined.
+# ---------------------------------------------------------------------------
+
+_GAME_START_HANDLERS: dict[str, Callable] = {
+    "Cell Lock": _trigger_cell_lock_start,
+    "Fortress": _trigger_fortress_start,
+    "Ghost Board": _trigger_ghost_board_start,
+    "Blind Shot": _trigger_blind_shot_start,
+    "Double Strike": _trigger_double_strike_start,
+    "Quick Draw": _trigger_quick_draw_start,
+}
+
+_X_PLACED_HANDLERS: dict[str, Callable] = {
+    "Ricochet": _trigger_ricochet_on_x,
+    "Overload": _trigger_overload_on_x,
+}
+
+_LINE_COMPLETE_HANDLERS: dict[str, Callable] = {
+    "Chain Reaction": _trigger_chain_reaction_on_line,
+}
+
+_SHOP_OPEN_HANDLERS: dict[str, Callable] = {
+    "Reroll": _trigger_reroll_free,
+    "Card Draw": _trigger_extra_offer,
+}

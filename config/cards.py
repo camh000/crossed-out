@@ -6,38 +6,111 @@ CARD_TYPE = Literal["action", "buff", "bonus", "power", "defensive", "strategy"]
 
 @dataclass
 class CardDef:
+    """A joker definition.
+
+    `triggers` lists the lifecycle hooks the joker reacts to. The
+    actual effect is dispatched by card name in
+    `systems/cardsystem.py`. Pure scoring buffs (Point Multiplier,
+    Diagonal Power, Wildcard, Deep Grid, Board Control, Final Count,
+    Token Bonus) have an empty `triggers` tuple — the scoring loop
+    reads their stack from `Player.upgrades` directly, so no hook
+    fire is needed.
+    """
+
     name: str
     cost: int
     desc: str
     card_type: CARD_TYPE
     rarity: float = 1.0
-    # Persistent cards stay in the player's `passive_cards` list and have
-    # their buff re-applied every game. One-shot cards (`persistent=False`)
-    # do their effect immediately when played and leave the hand.
-    persistent: bool = False
+    triggers: tuple[str, ...] = ()
 
 
 ALL_CARDS: list[CardDef] = [
-    CardDef("Double Strike", 3, "Place two X this turn on chosen row/col", "action"),
-    CardDef("Diagonal Power", 4, "+0.5 mult per copy on diagonal X lines", "buff", persistent=True),
-    CardDef("O Flipper", 2, "Before game: flip 1 O to X", "action"),
-    CardDef("Cell Lock", 3, "Choose 1 cell opponent can't place", "action"),
-    CardDef("Reroll", 2, "Shuffle 1 card back into deck, draw new", "action"),
-    CardDef("Point Multiplier", 5, "+3 ink per X line, per copy", "buff", persistent=True),
-    CardDef("Token Bonus", 3, "+3 tokens on win, per copy", "bonus", persistent=True),
-    CardDef("Blind Shot", 4, "Place X on a random edge; line containing it scores 2x ink", "action", 1.5),
-    CardDef("Board Control", 5, "Floor: at least size*size ink, per copy", "buff", 1.3, persistent=True),
-    CardDef("Card Draw", 2, "Draw 2 extra cards now", "action"),
-    CardDef("Sacrifice", -1, "Remove last X you played", "defensive"),
-    CardDef("Wildcard", 4, "Lines with one O count as your line, per copy", "buff", persistent=True),
-    CardDef("Overload", 3, "Destroy adjacent opponent O's after X placed", "action"),
-    CardDef("Ghost Board", 5, "3 hidden walls; revealed after first game", "strategy", 1.4),
-    CardDef("Final Count", 6, "Boss games: ink x2 per copy", "power", 1.6, persistent=True),
-    CardDef("Quick Draw", 1, "AI skips its next move (stacks)", "action"),
-    CardDef("Deep Grid", 3, "+1 ink per X line, per copy", "bonus", persistent=True),
-    CardDef("Fortress", 4, "One random cell locked as wall forever", "action"),
-    CardDef("Chain Reaction", 5, "Flip O's adjacent to every X line", "buff", 1.5),
-    CardDef("Ricochet", 3, "X placed on edge bounces to opposite edge", "action"),
+    # --- Pure scoring buffs (read at score time via Player.upgrades) -----
+    CardDef("Point Multiplier", 5, "+3 ink per X line (per copy)", "buff"),
+    CardDef("Diagonal Power", 4, "+0.5x mult on diagonal X lines (per copy)", "buff"),
+    CardDef("Wildcard", 4, "Lines with exactly one O score as your line (per copy)", "buff"),
+    CardDef("Deep Grid", 3, "+1 ink per X line (per copy)", "bonus"),
+    CardDef("Board Control", 5, "Floor: at least size*size ink (per copy)", "buff", 1.3),
+    CardDef("Final Count", 6, "Boss games: ink x2 (per copy)", "power", 1.6),
+    CardDef("Token Bonus", 3, "+3 tokens on every win (per copy)", "bonus"),
+    # --- Game-start triggers ---------------------------------------------
+    CardDef(
+        "Cell Lock", 3,
+        "Locks the centre cell each game (per copy: +1 random wall)",
+        "action",
+        triggers=("on_game_start",),
+    ),
+    CardDef(
+        "Fortress", 4,
+        "+1 random wall locked at game start (per copy)",
+        "action",
+        triggers=("on_game_start",),
+    ),
+    CardDef(
+        "Ghost Board", 5,
+        "+3 random walls placed at game start (per copy)",
+        "strategy", 1.4,
+        triggers=("on_game_start",),
+    ),
+    CardDef(
+        "Blind Shot", 4,
+        "Place a free X on a random edge each game; if it's in your winning line, that line's ink doubles",
+        "action", 1.5,
+        triggers=("on_game_start",),
+    ),
+    CardDef(
+        "Double Strike", 3,
+        "Place 1 free X for you at game start (per copy)",
+        "action",
+        triggers=("on_game_start",),
+    ),
+    CardDef(
+        "Quick Draw", 1,
+        "AI skips its first move each game (per copy)",
+        "action",
+        triggers=("on_game_start",),
+    ),
+    # --- Per-X triggers --------------------------------------------------
+    CardDef(
+        "Ricochet", 3,
+        "Every X you place on an edge mirrors to the opposite edge",
+        "action",
+        triggers=("on_x_placed",),
+    ),
+    CardDef(
+        "Overload", 3,
+        "Every X you place destroys all adjacent O's",
+        "action",
+        triggers=("on_x_placed",),
+    ),
+    # --- Per-line triggers -----------------------------------------------
+    CardDef(
+        "Chain Reaction", 5,
+        "When you complete an X line, all O's adjacent to that line flip to X",
+        "buff", 1.5,
+        triggers=("on_line_completed",),
+    ),
+    # --- Shop triggers (repurposed from hand-era cards) ------------------
+    CardDef(
+        "Reroll", 2,
+        "+1 free shop reroll per visit (per copy)",
+        "strategy",
+        triggers=("on_shop_open",),
+    ),
+    CardDef(
+        "Card Draw", 2,
+        "Shop offers +1 extra card (per copy)",
+        "strategy",
+        triggers=("on_shop_open",),
+    ),
+    # --- Defensive save --------------------------------------------------
+    CardDef(
+        "Sacrifice", 4,
+        "Once per game, if you would lose, instead remove your last X and continue (one save per copy)",
+        "defensive", 1.4,
+        triggers=("on_would_lose_game",),
+    ),
 ]
 
 

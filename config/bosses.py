@@ -12,8 +12,8 @@ class BossDef:
 BOSS_LIST: list[BossDef] = [
     BossDef(
         "The Blind",
-        "You see nothing.",
-        "Grid cells are hidden (showed as '?'). You place X without seeing the board until the game ends.",
+        "You don't see their moves.",
+        "Opponent O marks are hidden (showed as '?'). Your own X's stay visible. The board is revealed at game end.",
         "blind",
     ),
     BossDef(

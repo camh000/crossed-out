@@ -216,6 +216,32 @@ def draw_big_centered_text(surface, text, font, color, y):
     surface.blit(font.render(text, True, color), rect)
 
 
+def draw_joker_chip(surface: pygame.Surface, name: str, count: int,
+                    x: int, y: int, w: int, h: int) -> None:
+    """Compact card view used in the joker row. Shows the joker name (auto-
+    wrapped to 2 lines) and an `xN` stack badge in the top-right when more
+    than one copy is owned."""
+    from config.constants import CARD_BG, CARD_BORDER
+
+    pygame.draw.rect(surface, CARD_BG, (x, y, w, h), border_radius=6)
+    pygame.draw.rect(surface, ACCENT_GOLD, (x, y, w, h), 2, border_radius=6)
+
+    pad = 6
+    name_font = pygame.font.SysFont("sans-serif", 14, bold=True)
+    lines = _wrap_lines(name or "", name_font, w - 2 * pad)
+    for i, line in enumerate(lines[:3]):
+        s = name_font.render(line, True, TEXT_COLOR)
+        surface.blit(s, (x + pad, y + pad + i * name_font.get_linesize()))
+
+    if count > 1:
+        badge_font = pygame.font.SysFont("consolas", 14, bold=True)
+        bs = badge_font.render(f"x{count}", True, (0, 0, 0))
+        bw, bh = bs.get_width() + 8, bs.get_height() + 2
+        bx, by = x + w - bw - 4, y + h - bh - 4
+        pygame.draw.rect(surface, ACCENT_GOLD, (bx, by, bw, bh), border_radius=4)
+        surface.blit(bs, (bx + 4, by + 1))
+
+
 def draw_multiline_text(surface, text, font, color, x, y, max_width, max_lines=4):
     """Wrapped text rendering within a max_width box."""
     lines = _wrap_lines(text or "", font, max_width)

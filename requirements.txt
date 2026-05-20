@@ -1,10 +1,6 @@
-# Runtime dependency. pygame-ce is a maintained fork of pygame; pygbag
-# requires it for the WebAssembly build, and on desktop it is a drop-in
-# replacement (same `import pygame`).
-pygame-ce>=2.4.0
-
-# Build dependency for the WebAssembly bundle. Kept in this file (rather
-# than requirements-dev.txt) so Vercel's auto-install picks it up into the
-# same uv-managed environment as pygame-ce — otherwise the buildCommand's
-# `python3 -m pygbag` resolves to a different Python and can't find it.
+# Build dependency only. pygame-ce belongs in requirements-dev.txt so that
+# Vercel's auto-install does NOT put pygame's bundled examples (including
+# an mp3 that pygbag refuses to ship to web) into .vercel_python_packages
+# where the optimizer would find them. pygbag bundles its own pygame
+# runtime for the browser, so we don't need pygame on the build host.
 pygbag>=0.9.0

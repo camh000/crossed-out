@@ -277,6 +277,89 @@ class TestBoard:
         assert b.grid[4][4] == OPPONENT_O
 
 
+class TestPlacedAtAging:
+    """Each placement records the move_count at which it landed in
+    `board.placed_at[r][c]`. The Blind boss uses this to fade old marks.
+    Cleared cells reset to -1; grow/advance keep `placed_at` parallel to
+    `grid`."""
+
+    def test_first_placement_records_move_count(self):
+        from game.board import Board, PLAYER_X
+        b = Board()
+        b.place_at(1, 1, PLAYER_X)
+        assert b.placed_at[1][1] == 1  # move_count became 1 on placement
+        # Untouched cells stay -1.
+        assert b.placed_at[0][0] == -1
+
+    def test_consecutive_placements_increment_stamps(self):
+        from game.board import Board, PLAYER_X, OPPONENT_O
+        b = Board()
+        b.place_at(0, 0, PLAYER_X)   # move 1
+        b.place_at(0, 1, OPPONENT_O)  # move 2
+        b.place_at(0, 2, PLAYER_X)   # move 3
+        assert b.placed_at[0][0] == 1
+        assert b.placed_at[0][1] == 2
+        assert b.placed_at[0][2] == 3
+
+    def test_age_against_move_count(self):
+        """The convention used by the Blind renderer: age = move_count -
+        placed_at, where 0 means 'just placed this turn'."""
+        from game.board import Board, PLAYER_X
+        b = Board()
+        b.place_at(0, 0, PLAYER_X)  # move 1; placed_at=1
+        # After three more moves, the (0,0) mark is 3 moves old.
+        b.place_at(0, 1, PLAYER_X)  # move 2
+        b.place_at(1, 0, PLAYER_X)  # move 3
+        b.place_at(1, 1, PLAYER_X)  # move 4
+        assert b.move_count - b.placed_at[0][0] == 3
+
+    def test_remove_resets_stamp(self):
+        from game.board import Board, PLAYER_X
+        b = Board()
+        b.place_at(1, 1, PLAYER_X)
+        assert b.placed_at[1][1] >= 0
+        b.remove_at(1, 1)
+        assert b.placed_at[1][1] == -1
+
+    def test_clear_marks_resets_stamps(self):
+        from game.board import Board, PLAYER_X
+        b = Board()
+        b.place_at(0, 0, PLAYER_X)
+        b.clear_marks()
+        assert all(b.placed_at[r][c] == -1 for r in range(3) for c in range(3))
+
+    def test_grow_keeps_placed_at_parallel_to_grid(self):
+        from game.board import Board, PLAYER_X
+        b = Board()
+        b.place_at(0, 0, PLAYER_X)
+        b.grow_row_and_column()
+        # Dimensions match grid.
+        assert len(b.placed_at) == b.rows
+        for row in b.placed_at:
+            assert len(row) == b.cols
+
+    def test_advance_to_size_wipes_stamps_and_resizes(self):
+        from game.board import Board, PLAYER_X
+        b = Board()
+        b.place_at(0, 0, PLAYER_X)
+        b.advance_to_size(5)
+        # placed_at array got expanded and zeroed via clear_marks.
+        assert len(b.placed_at) == 5
+        for row in b.placed_at:
+            assert len(row) == 5
+            assert all(v == -1 for v in row)
+
+    def test_poison_clear_resets_stamp(self):
+        from game.board import Board, PLAYER_X
+        b = Board()
+        b.poison_cells = [(1, 1)]
+        b.place_at(1, 1, PLAYER_X)
+        assert b.placed_at[1][1] >= 0
+        b.register_poison_hit(1, 1, ttl=1)
+        b.tick_poison()  # ttl 1 -> 0, cell cleared
+        assert b.placed_at[1][1] == -1
+
+
 class TestPoisonTTL:
     """Poison boss: a player mark on a poison cell is removed after two
     AI ticks via Board.tick_poison()."""

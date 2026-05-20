@@ -33,6 +33,11 @@ class Board:
     # Per-cell ink weights. Weighted boss replaces this with 1-5 random
     # values; other modes leave it at all-1.
     weights: list[list[int]] = field(default_factory=list)
+    # Per-cell "move when placed" stamp, parallel to `grid`. Cells that
+    # were never placed (or were cleared) carry -1. The Blind boss uses
+    # `move_count - placed_at[r][c]` to decide whether a mark has aged
+    # past the visibility threshold.
+    placed_at: list[list[int]] = field(default_factory=list)
     move_count: int = 0
     game_over: bool = False
 
@@ -45,6 +50,8 @@ class Board:
             }
         if not self.weights:
             self.weights = [[1] * self.cols for _ in range(self.rows)]
+        if not self.placed_at:
+            self.placed_at = [[-1] * self.cols for _ in range(self.rows)]
 
     @property
     def rows(self) -> int:
@@ -66,6 +73,7 @@ class Board:
         self.move_count = 0
         self.game_over = False
         self.weights = [[1] * self.size for _ in range(self.size)]
+        self.placed_at = [[-1] * self.size for _ in range(self.size)]
         self.swap_counter = 0
 
     def clear_marks(self):
@@ -80,6 +88,7 @@ class Board:
         self.move_count = 0
         self.game_over = False
         self.weights = [[1] * self.cols for _ in range(self.rows)]
+        self.placed_at = [[-1] * self.cols for _ in range(self.rows)]
         self.swap_counter = 0
 
     def advance_to_size(self, new_size: int) -> None:
@@ -93,11 +102,14 @@ class Board:
             new_col_idx = self.cols  # index of the column we're about to add
             for row in self.grid:
                 row.append(EMPTY)
+            for row in self.placed_at:
+                row.append(-1)
             for r in range(self.rows):
                 self.valid_cells.add((r, new_col_idx))
         while self.rows < new_size:
             new_row_idx = self.rows
             self.grid.append([EMPTY] * self.cols)
+            self.placed_at.append([-1] * self.cols)
             for c in range(self.cols):
                 self.valid_cells.add((new_row_idx, c))
         self.clear_marks()
@@ -114,6 +126,7 @@ class Board:
         if val == PLAYER_X or val == OPPONENT_O:
             self.grid[r][c] = val
             self.move_count += 1
+            self.placed_at[r][c] = self.move_count
             return True
         return False
 
@@ -122,6 +135,7 @@ class Board:
         if (r, c) in self.valid_cells:
             val = self.grid[r][c]
             self.grid[r][c] = EMPTY
+            self.placed_at[r][c] = -1
             return val
         return EMPTY
 
@@ -215,6 +229,7 @@ class Board:
             if new_ttl <= 0:
                 if (r, c) in self.valid_cells:
                     self.grid[r][c] = EMPTY
+                    self.placed_at[r][c] = -1
                 if (r, c) in self.poison_cells:
                     self.poison_cells.remove((r, c))
                 cleared.append((r, c))
@@ -257,19 +272,25 @@ class Board:
                 row.insert(0, EMPTY)
             for row in self.weights:
                 row.insert(0, 1)
+            for row in self.placed_at:
+                row.insert(0, -1)
         else:
             for row in self.grid:
                 row.append(EMPTY)
             for row in self.weights:
                 row.append(1)
+            for row in self.placed_at:
+                row.append(-1)
 
         new_width = self.cols
         if add_top:
             self.grid.insert(0, [EMPTY] * new_width)
             self.weights.insert(0, [1] * new_width)
+            self.placed_at.insert(0, [-1] * new_width)
         else:
             self.grid.append([EMPTY] * new_width)
             self.weights.append([1] * new_width)
+            self.placed_at.append([-1] * new_width)
 
         self.shift_coords(row_shift, col_shift)
 

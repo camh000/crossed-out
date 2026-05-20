@@ -139,8 +139,24 @@ class CardSystem:
         return False
 
     def _lock_cell(self, board, player: Player) -> bool:
-        mid = board.size // 2
-        board.wall_cells.append((mid, mid))
+        """Lock the geometric centre of the current playable region.
+        Uses the bounding-box centre rather than `board.size` so it lands on
+        an actual valid cell even after the board has grown via draws."""
+        if not board.valid_cells:
+            return False
+        rows = [r for (r, _) in board.valid_cells]
+        cols = [c for (_, c) in board.valid_cells]
+        mid_r = (min(rows) + max(rows)) // 2
+        mid_c = (min(cols) + max(cols)) // 2
+        target = (mid_r, mid_c)
+        if target not in board.valid_cells:
+            empty = board.get_empty_cells()
+            if not empty:
+                return False
+            target = min(empty, key=lambda p: (p[0] - mid_r) ** 2 + (p[1] - mid_c) ** 2)
+        if target in board.wall_cells:
+            return False
+        board.wall_cells.append(target)
         return True
 
     def _reroll(self, player: Player) -> bool:
@@ -191,12 +207,14 @@ class CardSystem:
         return True
 
     def _fortress(self, board, player: Player) -> bool:
-        empty = board.get_empty_cells()
-        if empty:
-            r, c = empty[0]
-            board.wall_cells.append((r, c))
-            return True
-        return False
+        """Lock a random empty cell as a permanent wall. Previously this
+        always picked the top-left empty cell (sorted[0]) which contradicts
+        the card description ('One random cell locked as wall forever')."""
+        empty = [pos for pos in board.get_empty_cells() if pos not in board.wall_cells]
+        if not empty:
+            return False
+        board.wall_cells.append(random.choice(empty))
+        return True
 
     def _chain_reaction(self, board, player: Player) -> bool:
         flipped = False

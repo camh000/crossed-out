@@ -68,6 +68,20 @@ class Board:
         self.weights = [[1] * self.size for _ in range(self.size)]
         self.swap_counter = 0
 
+    def clear_marks(self):
+        """Wipe placed marks and per-game state but preserve the current
+        bounding box and valid-cells set, so growth gained from a draw in
+        a prior game carries into the next game within the same level."""
+        self.grid = [[EMPTY] * self.cols for _ in range(self.rows)]
+        self.wall_cells = []
+        self.poison_cells = []
+        self.poisoned_marks = []
+        self.locked_cells = []
+        self.move_count = 0
+        self.game_over = False
+        self.weights = [[1] * self.cols for _ in range(self.rows)]
+        self.swap_counter = 0
+
     def place_at(self, r: int, c: int, val: int) -> bool:
         if self.game_over:
             return False

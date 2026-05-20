@@ -47,7 +47,7 @@ class TestInjection:
         assert "CROSSED OUT" in text
         # Hide-script must be present so the overlay actually disappears
         # once pygame starts drawing.
-        assert "canvasHasPaint" in text
+        assert "gameReady" in text
 
     def test_second_run_is_no_op(self, tmp_index):
         inject_loader.inject(tmp_index)

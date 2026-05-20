@@ -43,35 +43,45 @@ _CELL_SHADOW_CACHE: dict[int, pygame.Surface] = {}
 def get_vignette(w: int, h: int) -> pygame.Surface:
     """A 720×1280 SRCALPHA surface darkening the corners. Built once and
     reused; one blit per frame. Approximated with a handful of concentric
-    rounded rects to avoid expensive per-pixel work."""
+    rounded rects to avoid expensive per-pixel work.
+
+    Returns None on any pygame error (e.g. an SRCALPHA / border_radius
+    incompatibility on a particular runtime). Callers must tolerate
+    `None` from this function."""
     global _VIGNETTE
     if _VIGNETTE is not None and _VIGNETTE.get_size() == (w, h):
         return _VIGNETTE
-    surf = pygame.Surface((w, h), pygame.SRCALPHA)
-    # Eight concentric inset rects, each adding ~10 alpha, gives a
-    # smooth-looking darken at the edges without per-pixel cost.
-    layers = 8
-    for i in range(layers):
-        inset = int((i / layers) * min(w, h) * 0.35)
-        rect = pygame.Rect(inset, inset, w - 2 * inset, h - 2 * inset)
-        alpha = 10  # cumulative across layers
-        pygame.draw.rect(surf, (0, 0, 0, alpha), rect, border_radius=24)
-    _VIGNETTE = surf
-    return surf
+    try:
+        surf = pygame.Surface((w, h), pygame.SRCALPHA)
+        layers = 8
+        for i in range(layers):
+            inset = int((i / layers) * min(w, h) * 0.35)
+            rect = pygame.Rect(inset, inset, w - 2 * inset, h - 2 * inset)
+            pygame.draw.rect(surf, (0, 0, 0, 10), rect, border_radius=24)
+        _VIGNETTE = surf
+    except Exception:
+        # If the runtime (e.g. pygame-ce on pygbag/WASM) chokes on either
+        # SRCALPHA or border_radius, return None so the renderer skips the
+        # blit instead of aborting the whole frame.
+        _VIGNETTE = None
+    return _VIGNETTE
 
 
-def get_cell_shadow(cell_size: int) -> pygame.Surface:
+def get_cell_shadow(cell_size: int) -> pygame.Surface | None:
     """Cell-sized SRCALPHA overlay: 1-px lighter top edge + 1-px darker
-    bottom edge. Cached by cell size since grids resize between levels."""
-    surf = _CELL_SHADOW_CACHE.get(cell_size)
-    if surf is not None:
-        return surf
-    surf = pygame.Surface((cell_size, cell_size), pygame.SRCALPHA)
-    pygame.draw.line(surf, (255, 255, 255, 28), (2, 0), (cell_size - 3, 0), 1)
-    pygame.draw.line(surf, (0, 0, 0, 70), (2, cell_size - 1),
-                     (cell_size - 3, cell_size - 1), 1)
-    _CELL_SHADOW_CACHE[cell_size] = surf
-    return surf
+    bottom edge. Cached by cell size since grids resize between levels.
+    Returns None on pygame error so callers can skip cleanly."""
+    if cell_size in _CELL_SHADOW_CACHE:
+        return _CELL_SHADOW_CACHE[cell_size]
+    try:
+        surf = pygame.Surface((cell_size, cell_size), pygame.SRCALPHA)
+        pygame.draw.line(surf, (255, 255, 255, 28), (2, 0), (cell_size - 3, 0), 1)
+        pygame.draw.line(surf, (0, 0, 0, 70), (2, cell_size - 1),
+                         (cell_size - 3, cell_size - 1), 1)
+        _CELL_SHADOW_CACHE[cell_size] = surf
+    except Exception:
+        _CELL_SHADOW_CACHE[cell_size] = None
+    return _CELL_SHADOW_CACHE[cell_size]
 
 
 def draw_board(surface: pygame.Surface, board: Board, cell_size: int, offset_x: int, offset_y: int):

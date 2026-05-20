@@ -275,3 +275,84 @@ class TestBoard:
         assert b.grid[0][0] == OPPONENT_O
         assert b.grid[2][2] == PLAYER_X
         assert b.grid[4][4] == OPPONENT_O
+
+
+class TestAddAdjacentCell:
+    def test_grow_adds_one_cell(self):
+        from game.board import Board
+        b = Board()
+        before = len(b.valid_cells)
+        added = b.add_random_adjacent_cell()
+        assert added is not None
+        assert len(b.valid_cells) == before + 1
+        assert added in b.valid_cells
+
+    def test_grow_extends_bounding_box(self):
+        from game.board import Board
+        b = Board()  # 3x3
+        # Force growth in every direction by repeatedly growing
+        for _ in range(8):
+            b.add_random_adjacent_cell()
+        # bounding box must have expanded in at least one dimension
+        assert b.rows > 3 or b.cols > 3
+
+    def test_grow_top_shifts_existing_cells(self):
+        """Growing into a negative row shifts all existing coords down by one."""
+        from game.board import Board, PLAYER_X
+        import random
+        b = Board()
+        b.place_at(0, 0, PLAYER_X)
+        # Force the new cell to be directly above (0, 1) — at conceptual (-1, 1)
+        random.seed(0)
+        # add cells until one lands above row 0; or force via _absorb
+        before = b.grid[0][0]
+        b._absorb((-1, 1))
+        # After shifting, the X that was at (0, 0) should now be at (1, 0)
+        assert b.grid[1][0] == PLAYER_X
+        # And (0, 1) — the newly added cell — should be in valid_cells
+        assert (0, 1) in b.valid_cells
+        assert b.rows == 4
+
+    def test_grow_preserves_marks(self):
+        from game.board import Board, PLAYER_X, OPPONENT_O
+        b = Board()
+        b.place_at(0, 0, PLAYER_X)
+        b.place_at(2, 2, OPPONENT_O)
+        for _ in range(5):
+            b.add_random_adjacent_cell()
+        # find the X and O — coords may have shifted if growth went up/left
+        x_positions = [(r, c) for (r, c) in b.valid_cells if b.grid[r][c] == PLAYER_X]
+        o_positions = [(r, c) for (r, c) in b.valid_cells if b.grid[r][c] == OPPONENT_O]
+        assert len(x_positions) == 1
+        assert len(o_positions) == 1
+
+    def test_grow_keeps_line_length(self):
+        """The size attribute (line target) is unaffected by growth."""
+        from game.board import Board
+        b = Board(size=3)
+        for _ in range(4):
+            b.add_random_adjacent_cell()
+        assert b.size == 3
+
+
+class TestLineDetectionAfterGrowth:
+    def test_line_in_added_row(self):
+        """3 X's in the new row count as a line of size 3."""
+        from game.board import Board, PLAYER_X
+        b = Board()
+        # Grow to (4, 3) by adding cells below row 2
+        b._absorb((3, 0))
+        b._absorb((3, 1))
+        b._absorb((3, 2))
+        b.place_at(3, 0, PLAYER_X)
+        b.place_at(3, 1, PLAYER_X)
+        b.place_at(3, 2, PLAYER_X)
+        assert b.count_lines_for(PLAYER_X) == 1
+
+    def test_isolated_added_cell_is_not_in_a_line(self):
+        from game.board import Board, PLAYER_X
+        b = Board()
+        b._absorb((-1, 1))  # single cell above row 0
+        b.place_at(0, 1, PLAYER_X)
+        # one X is not enough for a 3-line
+        assert b.count_lines_for(PLAYER_X) == 0

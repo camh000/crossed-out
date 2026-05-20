@@ -218,3 +218,107 @@ class TestEvaluateSettle:
         engine = GameEngine()
         engine.board.reset(3)
         pl = engine.engine.state
+
+
+class TestDrawGrowsGrid:
+    """A draw should expand the board by one adjacent cell, compound the
+    0.9x reward penalty, and let play continue (no end-of-game overlay)."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_draw_adds_one_cell_and_continues(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        engine = GameEngine()
+        engine.board.reset(3)
+        # Balanced 3x3 — 1 X line + 1 O line → draw
+        engine.board.grid = [
+            [PLAYER_X, PLAYER_X, PLAYER_X],
+            [OPPONENT_O, OPPONENT_O, OPPONENT_O],
+            [PLAYER_X, OPPONENT_O, PLAYER_X],
+        ]
+        engine.board.move_count = 9
+        pl = engine.engine.state
+        pl.is_boss = False
+        pl.player.score = 0
+        pl.current_target = 999
+        pl.draw_multiplier = 1.0
+        before = len(engine.board.valid_cells)
+        result = engine.evaluate_and_settle()
+        assert result == "draw"
+        assert len(engine.board.valid_cells) == before + 1
+        assert engine.board.game_over is False
+        assert engine.showing_result is False
+        assert pl.draw_multiplier == 0.9
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_draw_penalty_compounds(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        engine = GameEngine()
+        engine.board.reset(3)
+        pl = engine.engine.state
+        pl.is_boss = False
+        pl.player.score = 0
+        pl.current_target = 999
+        pl.draw_multiplier = 1.0
+        # Trigger three draws. The board grows each time, so we reset to a
+        # clean balanced 3x3 between iterations — the multiplier on RunState
+        # persists across resets.
+        for _ in range(3):
+            engine.board.reset(3)
+            engine.board.grid = [
+                [PLAYER_X, PLAYER_X, PLAYER_X],
+                [OPPONENT_O, OPPONENT_O, OPPONENT_O],
+                [PLAYER_X, OPPONENT_O, PLAYER_X],
+            ]
+            assert engine.evaluate_and_settle() == "draw"
+        assert abs(pl.draw_multiplier - 0.9 ** 3) < 1e-9
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_win_resets_multiplier(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(3)
+        pl = engine.engine.state
+        pl.is_boss = False
+        pl.draw_multiplier = 0.81
+        pl.player.tokens = 0
+        pl.player.score = 0
+        pl.current_target = 1
+        # Single line of X — clear win
+        engine.board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        result = engine.evaluate_and_settle()
+        assert result == "win"
+        assert pl.draw_multiplier == 1.0
+        # tokens awarded at the moment of evaluation use the pre-reset 0.81 multiplier
+        assert pl.player.tokens >= 1
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_lose_resets_multiplier(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        engine = GameEngine()
+        engine.board.reset(3)
+        pl = engine.engine.state
+        pl.is_boss = False
+        pl.draw_multiplier = 0.5
+        pl.player.score = 0
+        pl.current_target = 999
+        # O lines > X lines (1 vs 0) → lose
+        engine.board.grid[0] = [OPPONENT_O, OPPONENT_O, OPPONENT_O]
+        result = engine.evaluate_and_settle()
+        assert result == "lose"
+        assert pl.draw_multiplier == 1.0

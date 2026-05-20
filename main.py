@@ -46,6 +46,10 @@ class GameEngine:
         # result display
         self.showing_result = False
 
+        # transient "grid grew on draw" overlay
+        self.draw_message_until = 0
+        self.draw_message_cell = None
+
     def new_run(self):
         self.engine.start_new_run()
         pl = self.engine.state.player
@@ -106,6 +110,24 @@ class GameEngine:
         self.engine.state.run_complete = True
         self.state = "gameover"
 
+    def _board_layout(self) -> tuple[int, int, int]:
+        """Cell size and pixel offset for rendering the current board."""
+        rows = max(1, self.board.rows)
+        cols = max(1, self.board.cols)
+        avail = int(min((SCREEN_W - 120) / cols, (SCREEN_H - 300) / rows))
+        avail = max(1, avail)
+        off_x = (SCREEN_W - cols * avail) // 2
+        off_y = 100
+        return avail, off_x, off_y
+
+    def _cell_under(self, mx: int, my: int) -> tuple[int, int] | None:
+        avail, off_x, off_y = self._board_layout()
+        c = int((mx - off_x) // avail)
+        r = int((my - off_y) // avail)
+        if (r, c) in self.board.valid_cells:
+            return (r, c)
+        return None
+
     def evaluate_and_settle(self):
         pl = self.engine.state
         base_reward = 2
@@ -128,11 +150,24 @@ class GameEngine:
             else:
                 result = "lose"
 
+        if result == "draw":
+            # Grid grows by one adjacent cell and play continues. Each draw
+            # within the same game compounds a 10% penalty on the eventual
+            # win reward; a win or loss resets it.
+            pl.draw_multiplier *= 0.9
+            added = self.board.add_random_adjacent_cell()
+            self.board.game_over = False
+            self.showing_result = False
+            self.player_placed_this_turn = False
+            self.card_played_this_turn = False
+            pl.game_result = "draw"
+            self.draw_message_until = pygame.time.get_ticks() + 1500
+            self.draw_message_cell = added
+            return result
+
         if result == "win":
             pl.player.tokens += max(1, round(base_reward * pl.draw_multiplier))
             pl.draw_multiplier = 1.0
-        elif result == "draw":
-            pl.draw_multiplier *= 0.9
         else:
             pl.draw_multiplier = 1.0
 
@@ -276,37 +311,38 @@ class GameEngine:
                         draw_centered_text(surf, "GET READY", pygame.font.SysFont("sans-serif", 20), TEXT_SUB, SCREEN_H // 2 + 40)
                 return
 
-            gs = pl.get_grid_size()
-            avail = min((SCREEN_W - 120) / gs, (SCREEN_H - 300) / gs)
-            avail = int(avail)
-            off_x = (SCREEN_W - gs * avail) // 2
-            off_y = 100
+            avail, off_x, off_y = self._board_layout()
 
-            # draw board
-            for r in range(pl.get_grid_size()):
-                for c in range(gs):
-                    x = off_x + c * avail
-                    y = off_y + r * avail
-                    # cell bg
-                    pygame.draw.rect(surf, (28, 28, 48), (x, y, avail, avail), border_radius=4)
+            # draw playable cells (sparse — only valid_cells)
+            new_cell_glow = (
+                self.draw_message_cell
+                if self.draw_message_until and pygame.time.get_ticks() < self.draw_message_until
+                else None
+            )
+            for (r, c) in self.board.valid_cells:
+                x = off_x + c * avail
+                y = off_y + r * avail
+                pygame.draw.rect(surf, (28, 28, 48), (x, y, avail, avail), border_radius=4)
 
-                    val = self.board.grid[r][c]
-                    if val != 0:
-                        color = COLOR_X if val == PLAYER_X else COLOR_O
-                        # poison indicator
-                        if pl.current_boss and pl.current_boss.mechanic == "poison" and (r, c) in self.board.poison_cells:
-                            ps = avail // 5
-                            pygame.draw.rect(surf, (80, 180, 60), (x + avail//2 - ps//2, y + avail//2 - ps//2, ps, ps), border_radius=3)
-                        if val == PLAYER_X:
-                            m = avail // 4
-                            pygame.draw.line(surf, color, (x + m, y + m), (x + avail - m, y + avail - m), 4)
-                            pygame.draw.line(surf, color, (x + m, y + avail - m), (x + avail - m, y + m), 4)
-                        else:
-                            pygame.draw.circle(surf, color, (x + avail // 2, y + avail // 2), avail // 3, 4)
+                val = self.board.grid[r][c]
+                if val != 0:
+                    color = COLOR_X if val == PLAYER_X else COLOR_O
+                    if pl.current_boss and pl.current_boss.mechanic == "poison" and (r, c) in self.board.poison_cells:
+                        ps = avail // 5
+                        pygame.draw.rect(surf, (80, 180, 60), (x + avail//2 - ps//2, y + avail//2 - ps//2, ps, ps), border_radius=3)
+                    if val == PLAYER_X:
+                        m = avail // 4
+                        pygame.draw.line(surf, color, (x + m, y + m), (x + avail - m, y + avail - m), 4)
+                        pygame.draw.line(surf, color, (x + m, y + avail - m), (x + avail - m, y + m), 4)
+                    else:
+                        pygame.draw.circle(surf, color, (x + avail // 2, y + avail // 2), avail // 3, 4)
 
-                    # hover highlight
-                    if self.hover_pos == (r, c) and not self.showing_result:
-                        pygame.draw.rect(surf, ACCENT_GOLD, (x, y, avail, avail), 2, border_radius=4)
+                # hover highlight
+                if self.hover_pos == (r, c) and not self.showing_result:
+                    pygame.draw.rect(surf, ACCENT_GOLD, (x, y, avail, avail), 2, border_radius=4)
+                # newly-added cell glow during the draw transition
+                if new_cell_glow == (r, c):
+                    pygame.draw.rect(surf, ACCENT_GOLD, (x, y, avail, avail), 3, border_radius=4)
 
             # score display
             draw_score(surf, pl.player.score, pl.current_target, 20, 30)
@@ -356,10 +392,19 @@ class GameEngine:
                         can_afford=(pl.player.tokens >= cost_val),
                     )
 
-            # result overlay
+            # transient "DRAW! Grid grows" banner — shows briefly after a draw
+            # while play continues on the now-expanded board.
+            if self.draw_message_until and pygame.time.get_ticks() < self.draw_message_until:
+                penalty_pct = int(round((1 - pl.draw_multiplier) * 100))
+                banner = pygame.font.SysFont("consolas", 36).render("DRAW! Grid grows...", True, ACCENT_GOLD)
+                surf.blit(banner, (SCREEN_W // 2 - banner.get_width() // 2, 30))
+                sub = self.font.render(f"Win reward reduced by {penalty_pct}%", True, TEXT_SUB)
+                surf.blit(sub, (SCREEN_W // 2 - sub.get_width() // 2, 70))
+
+            # result overlay (win/lose only — draws keep the game going)
             if self.showing_result:
                 result = pl.game_result
-                txt_map = {"win": ("VICTORY!", ACCENT_GREEN), "lose": ("DEFEAT!", ACCENT_RED), "draw": ("DRAW!", ACCENT_GOLD)}
+                txt_map = {"win": ("VICTORY!", ACCENT_GREEN), "lose": ("DEFEAT!", ACCENT_RED)}
                 if result in txt_map:
                     txt, col = txt_map[result]
                     ts = pygame.font.SysFont("consolas", 64).render(txt, True, col)
@@ -468,16 +513,9 @@ class GameEngine:
                     self.start_game()
                 return
 
-            gs = pl.get_grid_size()
-            avail = min((SCREEN_W - 120) / gs, (SCREEN_H - 300) / gs)
-            avail = int(avail)
-            off_x = (SCREEN_W - gs * avail) // 2
-            off_y = 100
-
-            # check board click
-            col = int((mx - off_x) / avail)
-            row = int((my - off_y) / avail)
-            if 0 <= row < gs and 0 <= col < gs and self.board.grid[row][col] == 0 and not self.showing_result:
+            cell = self._cell_under(mx, my)
+            if cell is not None and self.board.grid[cell[0]][cell[1]] == 0 and not self.showing_result:
+                row, col = cell
                 placed = self.board.place_at(row, col, PLAYER_X)
                 if placed:
                     pl.player.cells_played.append((row, col))
@@ -581,15 +619,9 @@ class GameEngine:
         pl = self.engine.state
 
         if self.state in ("countdown", "game"):
-            gs = pl.get_grid_size()
-            avail = min((SCREEN_W - 120) / gs, (SCREEN_H - 300) / gs)
-            avail = int(avail)
-            off_x = (SCREEN_W - gs * avail) // 2
-            off_y = 100
-            col = int((mx - off_x) / avail)
-            row = int((my - off_y) / avail)
-            if 0 <= row < gs and 0 <= col < gs:
-                self.hover_pos = (row, col)
+            cell = self._cell_under(mx, my)
+            if cell is not None:
+                self.hover_pos = cell
 
             # check hand card hover
             hand = pl.player.hand

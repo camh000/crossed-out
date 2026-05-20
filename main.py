@@ -67,6 +67,9 @@ class GameEngine:
         gs = pl.get_grid_size()
         self.board.reset(gs)
         pl.current_target = pl.get_target()
+        # Per-game score resets so the win check stays per-game; the
+        # per-level total lives on score_this_level.
+        pl.player.score = 0
 
         # every 3rd game is a boss
         if pl.games_in_level % 3 == 0:
@@ -129,6 +132,23 @@ class GameEngine:
             return (r, c)
         return None
 
+    def _should_evaluate(self) -> bool:
+        """End the game on the first completed line, or when the board fills.
+
+        Mirror boss is the exception — the player fills the board for both
+        sides and the outcome depends on the net X−O line count, so play
+        continues even when a line forms mid-game.
+        """
+        if self.board.is_full():
+            return True
+        pl = self.engine.state
+        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "mirror":
+            return False
+        return (
+            self.board.count_lines_for(PLAYER_X) > 0
+            or self.board.count_lines_for(OPPONENT_O) > 0
+        )
+
     def evaluate_and_settle(self):
         pl = self.engine.state
         base_reward = 2
@@ -136,7 +156,9 @@ class GameEngine:
         if pl.is_boss and pl.current_boss:
             result = self._evaluate_boss()
         else:
-            # normal game: compare lines
+            # normal game: compare lines. Outcome is purely tic-tac-toe;
+            # the level score target lives on score_this_level and only
+            # gates run progression (see RunState.next_level).
             xp_lines = self.board.count_lines_for(PLAYER_X)
             op_lines = self.board.count_lines_for(OPPONENT_O)
             score = self.card_system.calculate_score(self.board, pl.player, pl.get_multiplier())
@@ -144,12 +166,12 @@ class GameEngine:
             pl.player.score += score
             pl.score_this_level += score
 
-            if xp_lines > op_lines or pl.player.score >= pl.current_target:
+            if xp_lines > op_lines:
                 result = "win"
-            elif xp_lines == op_lines:
-                result = "draw"
-            else:
+            elif xp_lines < op_lines:
                 result = "lose"
+            else:
+                result = "draw"
 
         if result == "draw":
             # Grid grows by a full new row and a full new column on random
@@ -234,13 +256,19 @@ class GameEngine:
                         return "lose"
 
         else:
+            # Default / "blind" / "weighted" / "poison" / "ghost_wall": play
+            # tic-tac-toe — outcome decided by line counts on the final board.
             xp = self.board.count_lines_for(PLAYER_X)
             op = self.board.count_lines_for(OPPONENT_O)
             score = self.card_system.calculate_score(self.board, pl.player, pl.get_multiplier())
             pl.total_score += score
             pl.player.score += score
             pl.score_this_level += score
-            return "win" if pl.player.score >= pl.current_target else "lose"
+            if xp > op:
+                return "win"
+            if xp < op:
+                return "lose"
+            return "draw"
 
         if self.board.is_full():
             if xp > op:
@@ -520,7 +548,7 @@ class GameEngine:
                 return
 
             cell = self._cell_under(mx, my)
-            if cell is not None and self.board.grid[cell[0]][cell[1]] == 0 and not self.showing_result:
+            if cell is not None and self.board.grid[cell[0]][cell[1]] == 0:
                 row, col = cell
                 placed = self.board.place_at(row, col, PLAYER_X)
                 if placed:
@@ -528,56 +556,27 @@ class GameEngine:
                     pl.player.placed_on_turn += 1
                     self.player_placed_this_turn = True
 
-                    # boss swap check
-                    if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "swap":
-                        if self.board.move_count % 3 == 0:
+                    if pl.is_boss and pl.current_boss:
+                        if pl.current_boss.mechanic == "swap" and self.board.move_count % 3 == 0:
                             self.board.apply_swap()
+                        if pl.current_boss.mechanic == "timed":
+                            self.countdown_start = pygame.time.get_ticks()
 
-                    # timed boss countdown reset
-                    if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "timed":
-                        self.countdown_start = pygame.time.get_ticks()
+                    # End immediately if the player just completed a line
+                    # (or filled the last cell).
+                    if self._should_evaluate():
+                        self.evaluate_and_settle()
+                        return
 
-                    # check game over
-                    if self.board.is_full() or self.board.count_empty() == 0 or (pl.is_boss and pl.current_boss):
-                        if pl.is_boss:
-                            if self._check_boss_continue(pl.current_boss):
-                                # keep going
-                                pass
-                            else:
-                                # end game
-                                pass
-                        if self.board.is_full():
-                            self.evaluate_and_settle()
-                            return
-
-                # auto opponent move after player
-                if not self.board.game_over:
+                    # AI counter-move
                     ai = OpponentAI(self.board)
                     move = ai.get_best_move()
                     if move:
                         self.board.place_at(move[0], move[1], OPPONENT_O)
 
-                # check if board is now full
-                if self.board.is_full() or self.board.count_empty() == 0:
-                    self.evaluate_and_settle()
-                    return
-
-                # check boss continue condition (doublecross)
-                if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "doublecross":
-                    xp = self.board.count_lines_for(PLAYER_X)
-                    op = self.board.count_lines_for(OPPONENT_O)
-                    if xp >= 1 or op >= 1:
+                    if self._should_evaluate():
                         self.evaluate_and_settle()
                         return
-                    else:
-                        # keep playing board state tracking
-                        ai = OpponentAI(self.board)
-                        move = ai.get_best_move()
-                        if move:
-                            self.board.place_at(move[0], move[1], OPPONENT_O)
-                        if self.board.is_full():
-                            self.evaluate_and_settle()
-                            return
 
             # check card click
             hand = pl.player.hand

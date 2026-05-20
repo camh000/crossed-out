@@ -130,34 +130,18 @@ class TestEvaluateSettle:
     @patch('pygame.display.set_mode')
     @patch('pygame.display.set_caption')
     def test_evaluate_normal_game_wins(self, mock_caption, mock_mode, mock_init):
+        """A normal game ends as a win when X has more completed lines than O."""
         from main import GameEngine
         from game.board import PLAYER_X, OPPONENT_O
         engine = GameEngine()
         engine.board.reset(3)
+        # One X line in row 0, no O line.
         engine.board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
-        engine.board.grid[1] = [OPPONENT_O, OPPONENT_O, OPPONENT_O]
+        engine.board.grid[1] = [OPPONENT_O, OPPONENT_O, 0]
         pl = engine.engine.state
         pl.is_boss = False
         pl.player.score = 0
-        pl.total_score = 0
-        pl.score_this_level = 0
-        pl.current_target = 10
-        pl.player = MagicMock()
-        pl.tokens = 0
-        pl.next_level()
-        pl.next_level()
-        pl.next_level()
-        pl.player.score = 0
-        pl.player.hand = []
-        pl.player.cells_played = []
-        pl.player.placed_on_turn = 0
-        pl.player.can_play_card = True
-        pl.get_multiplier = MagicMock(return_value=1)
-        pl.player.score = 6
-        pl.total_score = 0
-        pl.score_this_level = 0
-        pl.current_target = 3
-        engine.engine.card_system.calculate_score = MagicMock(return_value=6)
+        pl.current_target = 6
         result = engine.evaluate_and_settle()
         assert result == "win"
         assert pl.game_result == "win"
@@ -324,6 +308,109 @@ class TestDrawGrowsGrid:
         result = engine.evaluate_and_settle()
         assert result == "lose"
         assert pl.draw_multiplier == 1.0
+
+
+class TestMidGameWinDetection:
+    """A 3-in-a-row should end the game immediately, not after the board fills.
+    Pinning the regression where a Boss game showed "VICTORY!" on a full board
+    that had zero completed lines."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_player_line_ends_game(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        engine.start_game()
+        engine.state = "game"
+        # Pre-place 2 X's in row 0 and a couple of O's elsewhere so completing
+        # the X line doesn't also fill the board.
+        engine.board.grid[0][0] = PLAYER_X
+        engine.board.grid[0][1] = PLAYER_X
+        engine.board.grid[1][0] = OPPONENT_O
+        engine.board.grid[1][1] = OPPONENT_O
+        engine.board.move_count = 4
+        # Player clicks (0, 2) — completes the X line. Board still has empty cells.
+        avail, off_x, off_y = engine._board_layout()
+        mx = off_x + 2 * avail + avail // 2
+        my = off_y + 0 * avail + avail // 2
+        engine.handle_click(mx, my, 1)
+        assert engine.engine.state.game_result == "win"
+        assert engine.showing_result is True
+        # Board should NOT be full — the win came from a line, not from filling.
+        assert engine.board.is_full() is False
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_mirror_boss_does_not_end_on_line(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """Mirror boss must play until the board fills — a line mid-game is
+        not the win condition, the net X−O line count is."""
+        from main import GameEngine
+        from game.board import PLAYER_X
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        engine.start_game()
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["mirror"]
+        # An X line exists on the board.
+        engine.board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        # Board is not full → should NOT trigger evaluation.
+        assert engine._should_evaluate() is False
+
+
+class TestScoreResetsBetweenGames:
+    """Per-game score (player.score) resets at the start of each game so the
+    win check stays per-game and never auto-wins from a previous game's score."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_start_game_zeroes_player_score(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        pl.player.score = 42
+        engine.start_game()
+        assert pl.player.score == 0
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_full_board_with_no_lines_is_a_draw(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """A full board with equal (zero) line counts is a draw, regardless
+        of any previously-accumulated score on player.score."""
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        engine = GameEngine()
+        engine.board.reset(3)
+        # The exact board from the screenshot the user reported: full, but
+        # no completed line for either side.
+        engine.board.grid = [
+            [PLAYER_X, PLAYER_X, OPPONENT_O],
+            [OPPONENT_O, OPPONENT_O, PLAYER_X],
+            [PLAYER_X, OPPONENT_O, PLAYER_X],
+        ]
+        pl = engine.engine.state
+        pl.is_boss = False
+        # Pretend prior games accumulated score past the target — the bug we
+        # just fixed would have called this "win" because of that.
+        pl.player.score = 6
+        pl.current_target = 6
+        result = engine.evaluate_and_settle()
+        assert result == "draw"
 
 
 class TestGameCycle:

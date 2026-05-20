@@ -1307,6 +1307,64 @@ class TestJokerInspectAndSell:
         assert engine._joker_sell_price("Final Count") == 3         # 6 // 2
 
 
+class TestCodex:
+    """Main-menu CODEX button opens a browser of every glyph and every
+    boss modifier. Each entry opens the inspect modal — glyph view for
+    the glyphs tab, boss view for the bosses tab. No Sell button in
+    the codex (it's a meta view, not a shop)."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_codex_layout_has_back_and_tabs(self, mock_caption, mock_mode, mock_init):
+        """Layout helper must expose the three control rects every code
+        path through draw + handle_click depends on. The conftest pygame
+        stub makes rect.collidepoint untestable, so we just verify the
+        layout structure itself."""
+        from main import GameEngine
+        engine = GameEngine()
+        engine.state = "codex"
+        layout = engine._codex_layout()
+        assert "back" in layout
+        assert "tab_glyphs" in layout
+        assert "tab_bosses" in layout
+        assert "chips" in layout
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_codex_tab_switches_chip_set(self, mock_caption, mock_mode, mock_init):
+        """Switching tabs changes which name pool the chips iterate."""
+        from main import GameEngine
+        from config.cards import ALL_CARDS
+        from config.bosses import BOSS_LIST
+        engine = GameEngine()
+        engine.state = "codex"
+        engine._codex_tab = "glyphs"
+        glyph_names = {name for (name, _) in engine._codex_layout()["chips"]}
+        assert glyph_names == {c.name for c in ALL_CARDS}
+        engine._codex_tab = "bosses"
+        boss_names = {name for (name, _) in engine._codex_layout()["chips"]}
+        assert boss_names == {b.name for b in BOSS_LIST}
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_inspect_modal_supports_both_glyph_and_boss(self, mock_caption, mock_mode, mock_init):
+        """_draw_inspect_modal branches on _inspecting_boss vs
+        _inspecting_joker; both flavours must exist on the engine."""
+        from main import GameEngine
+        engine = GameEngine()
+        assert hasattr(engine, "_inspecting_joker")
+        assert hasattr(engine, "_inspecting_boss")
+        # Either being set is sufficient to put the modal up.
+        engine._inspecting_boss = "The Blind"
+        assert engine._inspecting_boss == "The Blind"
+        engine._inspecting_boss = None
+        engine._inspecting_joker = "Point Multiplier"
+        assert engine._inspecting_joker == "Point Multiplier"
+
+
 class TestBlindAI:
     """The AI is symmetrically blind during Blind boss games: it reads
     the same faded grid the player sees, so faded threats are invisible

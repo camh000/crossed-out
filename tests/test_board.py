@@ -277,6 +277,35 @@ class TestBoard:
         assert b.grid[4][4] == OPPONENT_O
 
 
+class TestPoisonTTL:
+    """Poison boss: a player mark on a poison cell is removed after two
+    AI ticks via Board.tick_poison()."""
+
+    def test_register_then_tick_clears_mark(self):
+        from game.board import Board, PLAYER_X, EMPTY
+        b = Board()
+        b.poison_cells = [(1, 1)]
+        b.place_at(1, 1, PLAYER_X)
+        b.register_poison_hit(1, 1, ttl=2)
+        # First tick: ttl 2 -> 1. Mark still there.
+        cleared = b.tick_poison()
+        assert cleared == []
+        assert b.grid[1][1] == PLAYER_X
+        assert (1, 1) in b.poison_cells
+        # Second tick: ttl 1 -> 0. Cell cleared and poison removed.
+        cleared = b.tick_poison()
+        assert cleared == [(1, 1)]
+        assert b.grid[1][1] == EMPTY
+        assert (1, 1) not in b.poison_cells
+
+    def test_shift_coords_moves_poisoned_marks(self):
+        from game.board import Board
+        b = Board()
+        b.register_poison_hit(0, 1, ttl=2)
+        b.shift_coords(1, 0)
+        assert b.poisoned_marks == [(1, 1, 2)]
+
+
 class TestGrowRowAndColumn:
     """On a draw the board grows by one full new row and one full new
     column on independently-chosen random sides."""

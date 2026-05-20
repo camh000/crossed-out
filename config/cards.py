@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Literal
 
-CARD_TYPE = Literal["action", "buff", "bonus", "power"]
+CARD_TYPE = Literal["action", "buff", "bonus", "power", "defensive", "strategy"]
 
 
 @dataclass
@@ -11,28 +11,32 @@ class CardDef:
     desc: str
     card_type: CARD_TYPE
     rarity: float = 1.0
+    # Persistent cards stay in the player's `passive_cards` list and have
+    # their buff re-applied every game. One-shot cards (`persistent=False`)
+    # do their effect immediately when played and leave the hand.
+    persistent: bool = False
 
 
 ALL_CARDS: list[CardDef] = [
     CardDef("Double Strike", 3, "Place two X this turn on chosen row/col", "action"),
-    CardDef("Diagonal Power", 4, "Diagonal lines score 2x this game", "buff"),
+    CardDef("Diagonal Power", 4, "+0.5 mult per copy on diagonal X lines", "buff", persistent=True),
     CardDef("O Flipper", 2, "Before game: flip 1 O to X", "action"),
     CardDef("Cell Lock", 3, "Choose 1 cell opponent can't place", "action"),
     CardDef("Reroll", 2, "Shuffle 1 card back into deck, draw new", "action"),
-    CardDef("Point Multiplier", 5, "Each line scored counts as +1 bonus", "buff"),
-    CardDef("Token Bonus", 3, "After game: +3 tokens earned", "bonus"),
-    CardDef("Blind Shot", 4, "Place X blind; if completes, double points", "action", 1.5),
-    CardDef("Board Control", 5, "Minimum 50% max possible score this game", "buff", 1.3),
-    CardDef("Card Draw", 2, "Draw 2 cards this turn", "action"),
-    CardDef("Sacrifice", -1, "Remove X to block line; opponent loses turn", "defensive"),
-    CardDef("Wildcard", 4, "Lines with exactly 1 O count as your line", "buff"),
+    CardDef("Point Multiplier", 5, "+3 ink per X line, per copy", "buff", persistent=True),
+    CardDef("Token Bonus", 3, "+3 tokens on win, per copy", "bonus", persistent=True),
+    CardDef("Blind Shot", 4, "Place X on a random edge; line containing it scores 2x ink", "action", 1.5),
+    CardDef("Board Control", 5, "Floor: at least size*size ink, per copy", "buff", 1.3, persistent=True),
+    CardDef("Card Draw", 2, "Draw 2 extra cards now", "action"),
+    CardDef("Sacrifice", -1, "Remove last X you played", "defensive"),
+    CardDef("Wildcard", 4, "Lines with one O count as your line, per copy", "buff", persistent=True),
     CardDef("Overload", 3, "Destroy adjacent opponent O's after X placed", "action"),
     CardDef("Ghost Board", 5, "3 hidden walls; revealed after first game", "strategy", 1.4),
-    CardDef("Final Count", 6, "Boss game: lines score as length x 2", "power", 1.6),
-    CardDef("Quick Draw", 1, "Skip opponent's next move", "action"),
-    CardDef("Deep Grid", 3, "Gain +1 token per line this game", "bonus"),
+    CardDef("Final Count", 6, "Boss games: ink x2 per copy", "power", 1.6, persistent=True),
+    CardDef("Quick Draw", 1, "AI skips its next move (stacks)", "action"),
+    CardDef("Deep Grid", 3, "+1 ink per X line, per copy", "bonus", persistent=True),
     CardDef("Fortress", 4, "One random cell locked as wall forever", "action"),
-    CardDef("Chain Reaction", 5, "Each line clears and deals 1 X damage to adjacent", "buff", 1.5),
+    CardDef("Chain Reaction", 5, "Flip O's adjacent to every X line", "buff", 1.5),
     CardDef("Ricochet", 3, "X placed on edge bounces to opposite edge", "action"),
 ]
 

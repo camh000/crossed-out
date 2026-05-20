@@ -26,6 +26,13 @@ class Board:
     wall_cells: list[tuple[int, int]] = field(default_factory=list)
     poison_cells: list[tuple[int, int]] = field(default_factory=list)
     locked_cells: list[tuple[int, int]] = field(default_factory=list)
+    # Poison boss: when a player places on a poison cell, the cell + a
+    # ttl is pushed here. Each AI move ticks the ttls down; at 0 the
+    # mark is removed and the poison cell cleared.
+    poisoned_marks: list[tuple[int, int, int]] = field(default_factory=list)
+    # Per-cell ink weights. Weighted boss replaces this with 1-5 random
+    # values; other modes leave it at all-1.
+    weights: list[list[int]] = field(default_factory=list)
     move_count: int = 0
     game_over: bool = False
 
@@ -36,6 +43,8 @@ class Board:
             self.valid_cells = {
                 (r, c) for r in range(len(self.grid)) for c in range(len(self.grid[0]))
             }
+        if not self.weights:
+            self.weights = [[1] * self.cols for _ in range(self.rows)]
 
     @property
     def rows(self) -> int:
@@ -52,6 +61,7 @@ class Board:
         self.valid_cells = {(r, c) for r in range(self.size) for c in range(self.size)}
         self.wall_cells = []
         self.poison_cells = []
+        self.poisoned_marks = []
         self.locked_cells = []
         self.move_count = 0
         self.game_over = False
@@ -156,6 +166,42 @@ class Board:
             elif self.grid[r][c] == OPPONENT_O:
                 self.grid[r][c] = PLAYER_X
 
+    def register_poison_hit(self, r: int, c: int, ttl: int = 2) -> None:
+        """Mark a player-placed cell as poisoned. tick_poison() will
+        remove it once the ttl reaches 0."""
+        self.poisoned_marks.append((r, c, ttl))
+
+    def tick_poison(self) -> list[tuple[int, int]]:
+        """Decrement every poison mark's ttl; clear the cells whose ttl
+        has reached zero. Returns the list of cleared cell coords."""
+        cleared: list[tuple[int, int]] = []
+        next_marks: list[tuple[int, int, int]] = []
+        for (r, c, ttl) in self.poisoned_marks:
+            new_ttl = ttl - 1
+            if new_ttl <= 0:
+                if (r, c) in self.valid_cells:
+                    self.grid[r][c] = EMPTY
+                if (r, c) in self.poison_cells:
+                    self.poison_cells.remove((r, c))
+                cleared.append((r, c))
+            else:
+                next_marks.append((r, c, new_ttl))
+        self.poisoned_marks = next_marks
+        return cleared
+
+    def shift_coords(self, row_shift: int, col_shift: int) -> None:
+        """Shift every coordinate-bearing list by (row_shift, col_shift).
+        Used by grow_row_and_column when it adds rows/cols on top/left."""
+        if not (row_shift or col_shift):
+            return
+        self.valid_cells = {(r + row_shift, c + col_shift) for (r, c) in self.valid_cells}
+        self.wall_cells = [(r + row_shift, c + col_shift) for (r, c) in self.wall_cells]
+        self.poison_cells = [(r + row_shift, c + col_shift) for (r, c) in self.poison_cells]
+        self.locked_cells = [(r + row_shift, c + col_shift) for (r, c) in self.locked_cells]
+        self.poisoned_marks = [
+            (r + row_shift, c + col_shift, ttl) for (r, c, ttl) in self.poisoned_marks
+        ]
+
     def grow_row_and_column(self) -> tuple[int, int]:
         """Add one new row and one new column on independently-chosen random
         sides (top/bottom for the row, left/right for the column).
@@ -175,21 +221,23 @@ class Board:
         if add_left:
             for row in self.grid:
                 row.insert(0, EMPTY)
+            for row in self.weights:
+                row.insert(0, 1)
         else:
             for row in self.grid:
                 row.append(EMPTY)
+            for row in self.weights:
+                row.append(1)
 
         new_width = self.cols
         if add_top:
             self.grid.insert(0, [EMPTY] * new_width)
+            self.weights.insert(0, [1] * new_width)
         else:
             self.grid.append([EMPTY] * new_width)
+            self.weights.append([1] * new_width)
 
-        if row_shift or col_shift:
-            self.valid_cells = {(r + row_shift, c + col_shift) for (r, c) in self.valid_cells}
-            self.wall_cells = [(r + row_shift, c + col_shift) for (r, c) in self.wall_cells]
-            self.poison_cells = [(r + row_shift, c + col_shift) for (r, c) in self.poison_cells]
-            self.locked_cells = [(r + row_shift, c + col_shift) for (r, c) in self.locked_cells]
+        self.shift_coords(row_shift, col_shift)
 
         new_row_idx = 0 if add_top else self.rows - 1
         new_col_idx = 0 if add_left else self.cols - 1

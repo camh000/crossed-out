@@ -43,12 +43,18 @@ class TestRunState:
         assert rs.games_per_level == 2
         assert rs.total_score == 0
         assert rs.score_this_level == 0
-        assert rs.score_targets == [6, 12, 20]
+        assert rs.score_targets == [50, 200, 800]
+        assert rs.ante_targets == [50, 200, 800]
         assert rs.current_target == 0
+        assert rs.ante_target == 0
         assert rs.is_boss is False
         assert rs.shop_phase is False
         assert rs.run_complete is False
         assert rs.won_run is False
+        assert rs.lives == 3
+        assert rs.max_lives == 3
+        assert rs.draws_this_game == 0
+        assert rs.score_this_game == 0
         assert isinstance(rs.player, Player)
 
     def test_get_grid_size_level_1(self):
@@ -69,19 +75,26 @@ class TestRunState:
 
     def test_get_target_level_1(self):
         rs = RunState(level=1)
-        assert rs.get_target() == 6
+        assert rs.get_target() == 50
 
     def test_get_target_level_2(self):
         rs = RunState(level=2)
-        assert rs.get_target() == 12
+        assert rs.get_target() == 200
 
     def test_get_target_level_3(self):
         rs = RunState(level=3)
-        assert rs.get_target() == 20
+        assert rs.get_target() == 800
 
     def test_get_target_level_4_clamped(self):
         rs = RunState(level=4)
-        assert rs.get_target() == 20
+        assert rs.get_target() == 800
+
+    def test_get_ante_target_levels(self):
+        assert RunState(level=1).get_ante_target() == 50
+        assert RunState(level=2).get_ante_target() == 200
+        assert RunState(level=3).get_ante_target() == 800
+        # Beyond level 3 clamps to the last ante.
+        assert RunState(level=4).get_ante_target() == 800
 
     def test_get_multiplier_level_1(self):
         rs = RunState(level=1)
@@ -115,14 +128,14 @@ class TestRunState:
         assert rs.level == 3
 
     def test_next_level_from_3_no_score_complete(self):
-        rs = RunState(level=3, score_this_level=0, current_target=20)
+        rs = RunState(level=3, score_this_level=0, current_target=800)
         result = rs.next_level()
         assert result is False
         assert rs.run_complete is True
         assert rs.won_run is False
 
     def test_next_level_from_3_with_score_complete(self):
-        rs = RunState(level=3, score_this_level=20, current_target=20)
+        rs = RunState(level=3, score_this_level=800, current_target=800)
         result = rs.next_level()
         assert result is False
         assert rs.run_complete is True

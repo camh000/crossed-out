@@ -123,14 +123,19 @@ class TestApplyCard:
         assert player.upgrades.get("point_mult") == 1
 
     def test_apply_token_bonus(self):
+        """Token Bonus is persistent and stacks +1 per copy."""
         cs = CardSystem()
         player = Player()
         board = Board()
         board.reset(3)
         assert cs.apply_card("Token Bonus", board, player) is True
-        assert player.upgrades.get("token_bonus") == 3
+        assert player.upgrades.get("token_bonus") == 1
+        assert "Token Bonus" in player.passive_cards
+        assert cs.apply_card("Token Bonus", board, player) is True
+        assert player.upgrades.get("token_bonus") == 2
 
     def test_apply_card_draw(self):
+        """Card Draw adds 2 cards on top of hand_size."""
         cs = CardSystem(hand_size=2)
         player = Player(deck=["Card Draw", "Quick Draw", "Fortress", "Overload"])
         player.hand = []
@@ -138,7 +143,8 @@ class TestApplyCard:
         board.reset(3)
         result = cs.apply_card("Card Draw", board, player)
         assert result is True
-        assert len(player.hand) == 2  # 2 cards drawn (hand_size=2), draw_hand only draws when hand is empty
+        # Card Draw tops hand up to hand_size + 2 = 4.
+        assert len(player.hand) == 4
 
     def test_apply_quick_draw(self):
         cs = CardSystem()
@@ -165,12 +171,14 @@ class TestApplyCard:
         assert player.upgrades.get("deep_grid") == 1
 
     def test_apply_final_count(self):
+        """Final Count is persistent and stacks +1 per copy."""
         cs = CardSystem()
         player = Player()
         board = Board()
         board.reset(3)
         assert cs.apply_card("Final Count", board, player) is True
-        assert player.upgrades.get("final_count") == 2
+        assert player.upgrades.get("final_count") == 1
+        assert "Final Count" in player.passive_cards
 
     def test_apply_unknown_card(self):
         cs = CardSystem()
@@ -388,59 +396,101 @@ class TestRicochet:
 
 
 class TestWildcardScoring:
-    """Wildcard buff: 'Lines with exactly 1 O count as your line'."""
+    """Wildcard buff: lines with exactly 1 O count as the player's line."""
 
-    @pytest.mark.xfail(
-        reason="Wildcard upgrade is recorded by apply_card but never consulted "
-               "by CardSystem.calculate_score; needs implementation.",
-        strict=True,
-    )
     def test_wildcard_counts_line_with_one_o(self):
         cs = CardSystem()
-        player = Player(upgrades={"wildcard": 1})
+        plain = Player()
+        buffed = Player(upgrades={"wildcard": 1})
         board = Board()
         board.reset(3)
-        # Row with two X and one O — under wildcard, should count as an X line
         board.grid[0] = [PLAYER_X, PLAYER_X, OPPONENT_O]
-        score = cs.calculate_score(board, player, 1)
-        assert score > 0
+        # Without wildcard the row scores 0 (1 X + 1 O isn't a line at all).
+        assert cs.calculate_score(board, plain, 1) == 0
+        # With wildcard the near-line counts and the player gets ink.
+        assert cs.calculate_score(board, buffed, 1) > 0
+
+    def test_wildcard_stacks(self):
+        """Each Wildcard copy unlocks one extra near-line."""
+        cs = CardSystem()
+        board = Board()
+        board.reset(3)
+        # Two near-lines, each two X and one O.
+        board.grid[0] = [PLAYER_X, PLAYER_X, OPPONENT_O]
+        board.grid[1] = [PLAYER_X, PLAYER_X, OPPONENT_O]
+        one = cs.calculate_score(board, Player(upgrades={"wildcard": 1}), 1)
+        two = cs.calculate_score(board, Player(upgrades={"wildcard": 2}), 1)
+        assert two > one
 
 
 class TestFinalCountScoring:
-    """Final Count buff: 'Boss game: lines score as length × 2'."""
+    """Final Count buff: boss games ink × 2 per copy."""
 
-    @pytest.mark.xfail(
-        reason="Final Count upgrade is recorded but never consulted by "
-               "calculate_score; needs implementation.",
-        strict=True,
-    )
-    def test_final_count_doubles_line_score(self):
+    def test_final_count_doubles_boss_ink(self):
         cs = CardSystem()
         plain = Player()
-        buffed = Player(upgrades={"final_count": 2})
+        buffed = Player(upgrades={"final_count": 1})
         board = Board()
         board.reset(3)
         board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
-        plain_score = cs.calculate_score(board, plain, 1)
-        buffed_score = cs.calculate_score(board, buffed, 1)
-        assert buffed_score > plain_score
+        plain_ink, _, _ = cs.score_breakdown(board, plain, 1, is_boss=True)
+        buffed_ink, _, _ = cs.score_breakdown(board, buffed, 1, is_boss=True)
+        assert buffed_ink == 2 * plain_ink
+
+    def test_final_count_no_effect_on_normal_games(self):
+        """Final Count only applies during boss games."""
+        cs = CardSystem()
+        plain = Player()
+        buffed = Player(upgrades={"final_count": 3})
+        board = Board()
+        board.reset(3)
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        assert cs.calculate_score(board, plain, 1) == cs.calculate_score(board, buffed, 1)
 
 
 class TestPostGameCleanup:
-    def test_cleanup_clears_temp_effects(self):
+    def test_cleanup_clears_only_one_shot_keys(self):
+        """Persistent buff keys survive cleanup so they keep stacking across
+        games. Only one-shot keys (Quick Draw's skip_opponent) get wiped."""
         cs = CardSystem()
         player = Player(upgrades={
-            "diagonal_power": 1,
-            "point_mult": 1,
-            "board_control": 0.5,
+            "diagonal_power": 2,
+            "point_mult": 3,
+            "board_control": 1,
             "deep_grid": 1,
             "wildcard": 1,
             "final_count": 2,
+            "token_bonus": 4,
             "skip_opponent": 1,
-            "blind_shot": 1,
         })
+        player.blind_shot_marks = [(0, 0), (1, 1)]
         cs.post_game_cleanup(player)
-        assert player.upgrades == {}
+        assert player.upgrades.get("diagonal_power") == 2
+        assert player.upgrades.get("point_mult") == 3
+        assert player.upgrades.get("token_bonus") == 4
+        assert "skip_opponent" not in player.upgrades
+        # Per-game blind shot tracking also clears.
+        assert player.blind_shot_marks == []
+
+
+class TestPassiveBuffReapply:
+    """apply_passive_buffs replays passive_cards into upgrades."""
+
+    def test_passive_buffs_stack_count(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Point Multiplier", "Point Multiplier", "Diagonal Power"])
+        cs.apply_passive_buffs(player)
+        assert player.upgrades["point_mult"] == 2
+        assert player.upgrades["diagonal_power"] == 1
+
+    def test_passive_buffs_replaces_stale_counts(self):
+        """Calling apply_passive_buffs again resets counts to match
+        passive_cards exactly — no double-counting from previous games."""
+        cs = CardSystem()
+        player = Player(passive_cards=["Point Multiplier"])
+        cs.apply_passive_buffs(player)
+        cs.apply_passive_buffs(player)
+        assert player.upgrades["point_mult"] == 1
 
 
 class TestDrawHand:

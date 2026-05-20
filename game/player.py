@@ -16,6 +16,13 @@ class Player:
     cells_played: list[tuple[int, int]] = field(default_factory=list)
     placed_on_turn: int = 0
     can_play_card: bool = True
+    # cards bought from the shop that persist across games and re-apply
+    # their buff every time start_game runs. One-shot action cards are not
+    # added here; only `CardDef.persistent` cards are.
+    passive_cards: list[str] = field(default_factory=list)
+    # cells placed by the "Blind Shot" card; if any of these cells end up
+    # in a completed X line, that line's ink is doubled.
+    blind_shot_marks: list[tuple[int, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -26,8 +33,12 @@ class RunState:
     games_per_level: int = 2
     total_score: int = 0
     score_this_level: int = 0
-    score_targets: list[int] = field(default_factory=lambda: [6, 12, 20])
+    # Per-level ink targets — the level 3 → 4 win check uses these.
+    score_targets: list[int] = field(default_factory=lambda: [50, 200, 800])
+    # Per-boss ante targets — failing the boss ante ends the run.
+    ante_targets: list[int] = field(default_factory=lambda: [50, 200, 800])
     current_target: int = 0
+    ante_target: int = 0
     is_boss: bool = False
     boss_index: int = 0
     shop_phase: bool = False
@@ -37,6 +48,17 @@ class RunState:
     current_boss_setup: Optional[str] = None
     game_result: str | None = None
     draw_multiplier: float = field(default_factory=lambda: 1.0)
+    # Lives system — start with 3, lose one on a game loss or a second
+    # draw within the same game. 0 = run failed immediately.
+    lives: int = 3
+    max_lives: int = 3
+    # Per-game scratch state, reset in start_game.
+    draws_this_game: int = 0
+    score_this_game: int = 0
+    skip_opponent_moves: int = 0
+    # Last evaluated score breakdown — for the UI to show "ink × mult".
+    last_ink: int = 0
+    last_mult: float = 1.0
     player: Player = field(default_factory=Player)
 
     def get_grid_size(self) -> int:
@@ -44,6 +66,9 @@ class RunState:
 
     def get_target(self) -> int:
         return self.score_targets[min(self.level - 1, 2)]
+
+    def get_ante_target(self) -> int:
+        return self.ante_targets[min(self.level - 1, 2)]
 
     def get_multiplier(self) -> int:
         return [1, 2, 3][min(self.level - 1, 2)]
@@ -73,3 +98,4 @@ class RunState:
         self.player.placed_on_turn = 0
         self.player.can_play_card = True
         self.draw_multiplier = 1.0
+        # passive_cards persist across levels — they're the player's build.

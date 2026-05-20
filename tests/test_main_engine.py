@@ -177,7 +177,7 @@ class TestEvaluateSettle:
         pl.score_this_level = 0
         pl.current_target = 1
         engine.engine.card_system.calculate_score = MagicMock(return_value=6)
-        result = engine._evaluate_boss()
+        result = engine._boss_outcome()
         assert result in ("win", "lose", "draw")
 
     @patch('pygame.init')
@@ -237,13 +237,19 @@ class TestDrawGrowsGrid:
         assert len(engine.board.valid_cells) == 16
         assert engine.board.game_over is False
         assert engine.showing_result is False
-        assert pl.draw_multiplier == 0.9
+        # First draw applies a 0.5x penalty (steeper than the old 0.9 to
+        # discourage stalling).
+        assert pl.draw_multiplier == 0.5
+        assert pl.draws_this_game == 1
 
     @patch('pygame.init')
     @patch('pygame.display.set_mode')
     @patch('pygame.display.set_caption')
     @patch('pygame.time.get_ticks', return_value=1000)
-    def test_draw_penalty_compounds(self, mock_ticks, mock_caption, mock_mode, mock_init):
+    def test_second_draw_within_same_game_loses_a_life(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """Drawing twice in one game now ends as a loss and costs a life
+        (the old behaviour was to keep growing forever for a 0.9x penalty,
+        which was the exploit)."""
         from main import GameEngine
         from game.board import PLAYER_X, OPPONENT_O
         engine = GameEngine()
@@ -253,18 +259,27 @@ class TestDrawGrowsGrid:
         pl.player.score = 0
         pl.current_target = 999
         pl.draw_multiplier = 1.0
-        # Trigger three draws. The board grows each time, so we reset to a
-        # clean balanced 3x3 between iterations — the multiplier on RunState
-        # persists across resets.
-        for _ in range(3):
-            engine.board.reset(3)
-            engine.board.grid = [
-                [PLAYER_X, PLAYER_X, PLAYER_X],
-                [OPPONENT_O, OPPONENT_O, OPPONENT_O],
-                [PLAYER_X, OPPONENT_O, PLAYER_X],
-            ]
-            assert engine.evaluate_and_settle() == "draw"
-        assert abs(pl.draw_multiplier - 0.9 ** 3) < 1e-9
+        pl.draws_this_game = 0
+        lives_before = pl.lives
+
+        engine.board.grid = [
+            [PLAYER_X, PLAYER_X, PLAYER_X],
+            [OPPONENT_O, OPPONENT_O, OPPONENT_O],
+            [PLAYER_X, OPPONENT_O, PLAYER_X],
+        ]
+        assert engine.evaluate_and_settle() == "draw"
+        assert pl.draws_this_game == 1
+        # Force a second draw on the now-grown board by re-creating the
+        # tied pattern and re-evaluating.
+        engine.board.reset(3)
+        engine.board.grid = [
+            [PLAYER_X, PLAYER_X, PLAYER_X],
+            [OPPONENT_O, OPPONENT_O, OPPONENT_O],
+            [PLAYER_X, OPPONENT_O, PLAYER_X],
+        ]
+        result = engine.evaluate_and_settle()
+        assert result == "lose"
+        assert pl.lives == lives_before - 1
 
     @patch('pygame.init')
     @patch('pygame.display.set_mode')
@@ -413,6 +428,131 @@ class TestScoreResetsBetweenGames:
         assert result == "draw"
 
 
+class TestLivesAndAnte:
+    """Lives system, draw cap, and boss ante failure modes."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_lose_decrements_life(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        engine = GameEngine()
+        engine.board.reset(3)
+        pl = engine.engine.state
+        pl.is_boss = False
+        pl.lives = 3
+        # AI has more lines than the player.
+        engine.board.grid[0] = [OPPONENT_O, OPPONENT_O, OPPONENT_O]
+        result = engine.evaluate_and_settle()
+        assert result == "lose"
+        assert pl.lives == 2
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_zero_lives_pends_run_end(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import OPPONENT_O
+        engine = GameEngine()
+        engine.board.reset(3)
+        pl = engine.engine.state
+        pl.is_boss = False
+        pl.lives = 1
+        engine.board.grid[0] = [OPPONENT_O, OPPONENT_O, OPPONENT_O]
+        engine.evaluate_and_settle()
+        assert pl.lives == 0
+        assert engine._pending_run_end is True
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_boss_ante_failure_ends_run(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """A mechanical boss win that doesn't hit the ante target is a
+        loss AND ends the run, regardless of remaining lives."""
+        from main import GameEngine
+        from game.board import PLAYER_X
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        engine.board.reset(3)
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["blind"]
+        pl.lives = 3
+        pl.ante_target = 50
+        pl.score_this_game = 0
+        # One X line; ink will be small, far below ante 50.
+        engine.board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        result = engine.evaluate_and_settle()
+        assert result == "lose"
+        assert engine._pending_run_end is True
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_boss_ante_pass_does_not_end_run(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        engine.board.reset(3)
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["blind"]
+        pl.lives = 3
+        pl.ante_target = 1  # trivially passable
+        engine.board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        result = engine.evaluate_and_settle()
+        assert result == "win"
+        assert engine._pending_run_end is False
+
+
+class TestTokenBonusReward:
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_token_bonus_stacks_on_win(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(3)
+        pl = engine.engine.state
+        pl.is_boss = False
+        pl.lives = 3
+        pl.player.tokens = 0
+        pl.player.upgrades["token_bonus"] = 2  # Two Token Bonus copies.
+        engine.board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        engine.evaluate_and_settle()
+        # base 2 win reward + 3 * 2 from Token Bonus stacks = 8.
+        assert pl.player.tokens == 8
+
+
+class TestStartGameRefreshes:
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_start_game_applies_passive_buffs(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        pl.player.passive_cards = ["Point Multiplier", "Point Multiplier", "Diagonal Power"]
+        engine.start_game()
+        assert pl.player.upgrades.get("point_mult") == 2
+        assert pl.player.upgrades.get("diagonal_power") == 1
+        # Per-game scratch cleared.
+        assert pl.draws_this_game == 0
+        assert pl.score_this_game == 0
+        assert pl.player.blind_shot_marks == []
+
+
 class TestGameCycle:
     """Within a level: game 1 normal → game 2 normal → game 3 boss → shop."""
 
@@ -522,6 +662,9 @@ class TestClickToAdvance:
         engine.board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
         pl.player.score = 10
         pl.current_target = 1
+        # Make the ante trivially passable for this test — the ante check
+        # is exercised separately.
+        pl.ante_target = 0
         engine.evaluate_and_settle()
         # Boss win → showing_result True with pl.is_boss True
         engine.handle_click(100, 100, 1)

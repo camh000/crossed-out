@@ -51,6 +51,11 @@ class GameEngine:
         self.draw_message_until = 0
         self.draw_message_cell = None
 
+        # Set by evaluate_and_settle when a game ends the whole run
+        # (zero lives or boss ante failure). The click-to-advance handler
+        # checks this and routes to finish_run instead of the next game.
+        self._pending_run_end = False
+
     def new_run(self):
         self.engine.start_new_run()
         pl = self.engine.state.player
@@ -67,9 +72,17 @@ class GameEngine:
         gs = pl.get_grid_size()
         self.board.reset(gs)
         pl.current_target = pl.get_target()
-        # Per-game score resets so the win check stays per-game; the
-        # per-level total lives on score_this_level.
+        # Per-game scratch resets.
         pl.player.score = 0
+        pl.score_this_game = 0
+        pl.draws_this_game = 0
+        pl.last_ink = 0
+        pl.last_mult = 1.0
+        pl.player.blind_shot_marks = []
+        pl.game_result = None
+        # Re-apply the player's persistent buff stack into upgrades so
+        # buff cards bought across runs feed into score_breakdown.
+        self.card_system.apply_passive_buffs(pl.player)
         # Top the player's hand up from their deck so they always have
         # cards to play this game.
         self.card_system.draw_hand(pl.player)
@@ -79,22 +92,26 @@ class GameEngine:
             pl.boss_index = pl.games_in_level // 3 - 1
             boss = BOSS_LIST[pl.boss_index % len(BOSS_LIST)]
             pl.current_boss = boss
+            pl.ante_target = pl.get_ante_target()
             self.engine.current_boss_mechanic = boss.mechanic
 
             # apply boss-specific setup
             empty = self.board.get_empty_cells()
             if boss.mechanic == "poison":
                 self.board.poison_cells = random.sample(empty, min(3, len(empty)))
-            if pl.current_boss.mechanic == "timed":
+            if boss.mechanic == "weighted":
+                self.board.weights = self.board.get_weights()
+            if boss.mechanic == "timed":
                 self.countdown_start = pygame.time.get_ticks()
             if pl.is_boss:
                 pl.current_boss_setup = boss.mechanic
-            if pl.current_boss.mechanic == "swap":
+            if boss.mechanic == "swap":
                 self.board.swap_counter = 0
 
             pl.is_boss = True
             self.state = "boss_intro"
         else:
+            pl.ante_target = 0
             pl.is_boss = False
             pl.shop_phase = False
             self.state = "countdown"
@@ -154,142 +171,101 @@ class GameEngine:
 
     def evaluate_and_settle(self):
         pl = self.engine.state
-        base_reward = 2
+        is_boss = bool(pl.is_boss and pl.current_boss)
 
-        if pl.is_boss and pl.current_boss:
-            result = self._evaluate_boss()
-        else:
-            # normal game: compare lines. Outcome is purely tic-tac-toe;
-            # the level score target lives on score_this_level and only
-            # gates run progression (see RunState.next_level).
-            xp_lines = self.board.count_lines_for(PLAYER_X)
-            op_lines = self.board.count_lines_for(OPPONENT_O)
-            score = self.card_system.calculate_score(self.board, pl.player, pl.get_multiplier())
-            pl.total_score += score
-            pl.player.score += score
-            pl.score_this_level += score
+        # Single ink × mult scoring pass for the current board state.
+        ink, mult, total = self.card_system.score_breakdown(
+            self.board, pl.player, pl.get_multiplier(), is_boss=is_boss,
+        )
+        pl.last_ink = ink
+        pl.last_mult = mult
+        pl.score_this_game += total
+        pl.player.score += total
+        pl.total_score += total
+        pl.score_this_level += total
 
-            if xp_lines > op_lines:
-                result = "win"
-            elif xp_lines < op_lines:
-                result = "lose"
+        # Outcome by lines (mechanic-aware).
+        outcome = self._boss_outcome() if is_boss else self._normal_outcome()
+
+        # Boss ante check — a mechanical win that doesn't hit the ink
+        # target counts as a loss and ends the run.
+        ante_failed = False
+        if is_boss and outcome == "win" and pl.score_this_game < pl.ante_target:
+            outcome = "lose"
+            ante_failed = True
+
+        if outcome == "draw":
+            if pl.draws_this_game >= 1:
+                # Second draw within the same game converts to a loss.
+                outcome = "lose"
             else:
-                result = "draw"
+                pl.draws_this_game += 1
+                pl.draw_multiplier *= 0.5
+                row_shift, col_shift = self.board.grow_row_and_column()
+                if row_shift or col_shift:
+                    pl.player.cells_played = [
+                        (r + row_shift, c + col_shift) for (r, c) in pl.player.cells_played
+                    ]
+                    pl.player.blind_shot_marks = [
+                        (r + row_shift, c + col_shift) for (r, c) in pl.player.blind_shot_marks
+                    ]
+                self.board.game_over = False
+                self.showing_result = False
+                self.player_placed_this_turn = False
+                self.card_played_this_turn = False
+                pl.game_result = "draw"
+                self.draw_message_until = pygame.time.get_ticks() + 1500
+                self.draw_message_cell = None
+                return "draw"
 
-        if result == "draw":
-            # Grid grows by a full new row and a full new column on random
-            # sides, giving both players room to manoeuvre on the next turns.
-            # Each draw compounds a 10% penalty on the eventual win reward;
-            # a win or loss resets it.
-            pl.draw_multiplier *= 0.9
-            row_shift, col_shift = self.board.grow_row_and_column()
-            if row_shift or col_shift:
-                pl.player.cells_played = [
-                    (r + row_shift, c + col_shift) for (r, c) in pl.player.cells_played
-                ]
-            self.board.game_over = False
-            self.showing_result = False
-            self.player_placed_this_turn = False
-            self.card_played_this_turn = False
-            pl.game_result = "draw"
-            self.draw_message_until = pygame.time.get_ticks() + 1500
-            self.draw_message_cell = None
-            return result
-
-        if result == "win":
+        if outcome == "win":
+            base_reward = 2
+            token_bonus_stacks = pl.player.upgrades.get("token_bonus", 0)
             pl.player.tokens += max(1, round(base_reward * pl.draw_multiplier))
+            pl.player.tokens += 3 * token_bonus_stacks
             pl.draw_multiplier = 1.0
-        else:
+        else:  # lose
             pl.draw_multiplier = 1.0
+            pl.lives -= 1
 
-        pl.game_result = result
+        pl.game_result = outcome
         self.showing_result = True
         self.board.game_over = True
-        return result
 
-    def _evaluate_boss(self):
+        # Run-ending failure modes — ante failure on a boss, or zero lives.
+        if ante_failed or pl.lives <= 0:
+            self._pending_run_end = True
+        return outcome
+
+    def _normal_outcome(self) -> str:
+        xp = self.board.count_lines_for(PLAYER_X)
+        op = self.board.count_lines_for(OPPONENT_O)
+        if xp > op:
+            return "win"
+        if xp < op:
+            return "lose"
+        return "draw"
+
+    def _boss_outcome(self) -> str:
+        """Outcome rule per boss mechanic. Scoring already happened in
+        evaluate_and_settle; this only decides win/lose/draw before the
+        ante check applies."""
         pl = self.engine.state
         boss = pl.current_boss
-        bs = self.board.size
+        xp = self.board.count_lines_for(PLAYER_X)
+        op = self.board.count_lines_for(OPPONENT_O)
 
-        if boss.mechanic == "doublecross":
-            # first to complete a line wins
-            xp = self.board.count_lines_for(PLAYER_X)
-            op = self.board.count_lines_for(OPPONENT_O)
-            if xp >= 1 and op >= 1:
-                self.card_system.calculate_score(self.board, pl.player, pl.get_multiplier())
-                return "win" if pl.player.score >= pl.current_target else "lose"
-            # check if board full
-            if self.board.is_full():
-                return "draw"
-            if xp > op:
-                return "win"
-            if op > xp:
-                return "lose"
-
-        elif boss.mechanic == "mirror":
-            xp = self.board.count_lines_for(PLAYER_X)
-            op = self.board.count_lines_for(OPPONENT_O)
-            win_lines = max(0, xp - op)
-            score = win_lines * bs * pl.get_multiplier()
-            pl.total_score += score
-            pl.player.score += score
-            pl.score_this_level += score
-            return "win" if win_lines > 0 else "draw"
-
-        elif boss.mechanic == "timed" or boss.mechanic == "swap":
-            xp = self.board.count_lines_for(PLAYER_X)
-            op = self.board.count_lines_for(OPPONENT_O)
-            if xp > op:
-                score = self.card_system.calculate_score(self.board, pl.player, pl.get_multiplier())
-                pl.total_score += score
-                pl.player.score += score
-                pl.score_this_level += score
-                return "win"
-            elif xp == op and self.board.is_full():
-                score = self.card_system.calculate_score(self.board, pl.player, pl.get_multiplier())
-                pl.total_score += score
-                pl.player.score += score
-                pl.score_this_level += score
-                return "draw"
-            else:
-                op_lines = self.board.get_lines()
-                for v, cells in op_lines:
-                    if v == OPPONENT_O and PLAYER_X not in [self.board.grid[r][c] for r, c in cells]:
-                        return "lose"
-
-        else:
-            # Default / "blind" / "weighted" / "poison" / "ghost_wall": play
-            # tic-tac-toe — outcome decided by line counts on the final board.
-            xp = self.board.count_lines_for(PLAYER_X)
-            op = self.board.count_lines_for(OPPONENT_O)
-            score = self.card_system.calculate_score(self.board, pl.player, pl.get_multiplier())
-            pl.total_score += score
-            pl.player.score += score
-            pl.score_this_level += score
-            if xp > op:
-                return "win"
-            if xp < op:
-                return "lose"
-            return "draw"
-
+        # Mirror is the only mechanic that requires the board to be full
+        # before resolving — _should_evaluate already gates on that.
+        if xp > op:
+            return "win"
+        if xp < op:
+            return "lose"
         if self.board.is_full():
-            if xp > op:
-                score = self.card_system.calculate_score(self.board, pl.player, pl.get_multiplier())
-                pl.total_score += score
-                pl.player.score += score
-                pl.score_this_level += score
-                return "win"
-            elif xp == op:
-                return "draw"
-        return "lose"
-
-    def _check_boss_continue(self, boss):
-        if boss.mechanic == "doublecross":
-            xp = self.board.count_lines_for(PLAYER_X)
-            op = self.board.count_lines_for(OPPONENT_O)
-            return xp < 1 or op < 1
-        return not self.board.is_full()
+            return "draw"
+        # Reached when _should_evaluate triggered on a line but counts
+        # somehow ended even — treat as draw to expand and continue.
+        return "draw"
 
     def draw(self):
         surf = pygame.display.get_surface()
@@ -362,18 +338,51 @@ class GameEngine:
                 y = off_y + r * avail
                 pygame.draw.rect(surf, (28, 28, 48), (x, y, avail, avail), border_radius=4)
 
+                # Empty poison cells get a green warning square even when
+                # nothing is placed yet, so the player can see the hazard.
+                if (
+                    pl.current_boss
+                    and pl.current_boss.mechanic == "poison"
+                    and (r, c) in self.board.poison_cells
+                ):
+                    ps = avail // 5
+                    pygame.draw.rect(surf, (80, 180, 60), (x + avail // 2 - ps // 2, y + avail // 2 - ps // 2, ps, ps), border_radius=3)
+
                 val = self.board.grid[r][c]
-                if val != 0:
+                # Blind boss: hide every placed mark behind a "?" until the
+                # game ends. The reveal only happens on the result overlay.
+                blind_hide = (
+                    pl.is_boss
+                    and pl.current_boss
+                    and pl.current_boss.mechanic == "blind"
+                    and not self.showing_result
+                    and val != 0
+                )
+                if blind_hide:
+                    q_font = pygame.font.SysFont("consolas", max(20, avail // 2), bold=True)
+                    q_surf = q_font.render("?", True, TEXT_SUB)
+                    surf.blit(
+                        q_surf,
+                        (x + avail // 2 - q_surf.get_width() // 2, y + avail // 2 - q_surf.get_height() // 2),
+                    )
+                elif val != 0:
                     color = COLOR_X if val == PLAYER_X else COLOR_O
-                    if pl.current_boss and pl.current_boss.mechanic == "poison" and (r, c) in self.board.poison_cells:
-                        ps = avail // 5
-                        pygame.draw.rect(surf, (80, 180, 60), (x + avail//2 - ps//2, y + avail//2 - ps//2, ps, ps), border_radius=3)
                     if val == PLAYER_X:
                         m = avail // 4
                         pygame.draw.line(surf, color, (x + m, y + m), (x + avail - m, y + avail - m), 4)
                         pygame.draw.line(surf, color, (x + m, y + avail - m), (x + avail - m, y + m), 4)
                     else:
                         pygame.draw.circle(surf, color, (x + avail // 2, y + avail // 2), avail // 3, 4)
+
+                # Weighted boss: print each cell's weight in the corner.
+                if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "weighted":
+                    try:
+                        w = self.board.weights[r][c]
+                    except (IndexError, AttributeError):
+                        w = 1
+                    if w > 1:
+                        wf = pygame.font.SysFont("consolas", 14).render(str(w), True, ACCENT_GOLD)
+                        surf.blit(wf, (x + 4, y + 4))
 
                 # hover highlight
                 if self.hover_pos == (r, c) and not self.showing_result:
@@ -387,9 +396,19 @@ class GameEngine:
             draw_tokens(surf, pl.player.tokens, SCREEN_W - 200, 30)
             lv_txt = self.font.render(f"Level {pl.level}", True, TEXT_COLOR)
             surf.blit(lv_txt, (20, 10))
+            # Lives — small hearts in the centre of the top bar.
+            hearts = "♥" * pl.lives + "♡" * max(0, pl.max_lives - pl.lives)
+            hearts_surf = pygame.font.SysFont("consolas", 28).render(hearts, True, ACCENT_RED)
+            surf.blit(hearts_surf, (SCREEN_W // 2 - hearts_surf.get_width() // 2, 20))
             if pl.current_boss:
                 boss_txt = self.font.render(f"BOSS: {pl.current_boss.name}", True, ACCENT_RED)
                 surf.blit(boss_txt, (SCREEN_W - 10 - boss_txt.get_width(), 60))
+                if pl.ante_target > 0:
+                    ante_color = ACCENT_GREEN if pl.score_this_game >= pl.ante_target else ACCENT_RED
+                    ante_txt = self.font.render(
+                        f"Ante: {pl.score_this_game} / {pl.ante_target}", True, ante_color,
+                    )
+                    surf.blit(ante_txt, (SCREEN_W - 10 - ante_txt.get_width(), 85))
 
             # timed boss countdown
             if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "timed" and self.countdown_start:
@@ -445,12 +464,23 @@ class GameEngine:
                 txt_map = {"win": ("VICTORY!", ACCENT_GREEN), "lose": ("DEFEAT!", ACCENT_RED)}
                 if result in txt_map:
                     txt, col = txt_map[result]
+                    cy = SCREEN_H // 2
                     ts = pygame.font.SysFont("consolas", 64).render(txt, True, col)
-                    surf.blit(ts, (SCREEN_W // 2 - ts.get_width() // 2, SCREEN_H // 2 - 50))
-                    ct = self.font.render(f"Score: {pl.player.score}", True, TEXT_COLOR)
-                    surf.blit(ct, (SCREEN_W // 2 - ct.get_width() // 2, SCREEN_H // 2 + 20))
-                    ct2 = self.font.render("Click to continue", True, TEXT_SUB)
-                    surf.blit(ct2, (SCREEN_W // 2 - ct2.get_width() // 2, SCREEN_H // 2 + 55))
+                    surf.blit(ts, (SCREEN_W // 2 - ts.get_width() // 2, cy - 100))
+                    # Ink × Mult breakdown — this is the run-away feedback.
+                    ink_mult_text = f"Ink {pl.last_ink}  ×  Mult {pl.last_mult:g}"
+                    bd = pygame.font.SysFont("consolas", 28).render(ink_mult_text, True, ACCENT_GOLD)
+                    surf.blit(bd, (SCREEN_W // 2 - bd.get_width() // 2, cy - 20))
+                    score_txt = self.font.render(f"Score this game: {pl.score_this_game}", True, TEXT_COLOR)
+                    surf.blit(score_txt, (SCREEN_W // 2 - score_txt.get_width() // 2, cy + 20))
+                    if self._pending_run_end:
+                        end_txt = self.font.render(
+                            "Run failed — click to return to menu", True, ACCENT_RED,
+                        )
+                        surf.blit(end_txt, (SCREEN_W // 2 - end_txt.get_width() // 2, cy + 60))
+                    else:
+                        cont = self.font.render("Click to continue", True, TEXT_SUB)
+                        surf.blit(cont, (SCREEN_W // 2 - cont.get_width() // 2, cy + 60))
 
         elif self.state == "shop":
             draw_centered_text(surf, "SHOP", pygame.font.SysFont("consolas", 40), ACCENT_GOLD, 50)
@@ -524,10 +554,10 @@ class GameEngine:
         elif self.state == "boss_intro":
             pl.game_result = None
             self.showing_result = False
-            pl.is_boss = False
+            # Note: pl.is_boss stays True — start_game set it because this
+            # IS the boss game. Clearing it here would hide the mechanic
+            # from every runtime check in evaluate_and_settle / rendering.
             self.countdown_start = pygame.time.get_ticks()
-            if pl.current_boss and pl.current_boss.mechanic == "timed":
-                self.countdown_start = pygame.time.get_ticks()
             self.state = "game"
 
         elif self.state == "gameover":
@@ -541,11 +571,16 @@ class GameEngine:
             # If we're displaying a result overlay, any click advances to the next phase.
             if self.showing_result:
                 was_boss = pl.is_boss
+                run_ending = getattr(self, "_pending_run_end", False)
                 self.showing_result = False
                 pl.game_result = None
                 self.player_placed_this_turn = False
                 self.card_played_this_turn = False
                 self.card_system.post_game_cleanup(pl.player)
+                if run_ending:
+                    self._pending_run_end = False
+                    self.finish_run(won=False)
+                    return
                 if was_boss:
                     self.do_shop()
                 else:
@@ -566,6 +601,8 @@ class GameEngine:
                             self.board.apply_swap()
                         if pl.current_boss.mechanic == "timed":
                             self.countdown_start = pygame.time.get_ticks()
+                        if pl.current_boss.mechanic == "poison" and (row, col) in self.board.poison_cells:
+                            self.board.register_poison_hit(row, col, ttl=2)
 
                     # End immediately if the player just completed a line
                     # (or filled the last cell).
@@ -573,11 +610,19 @@ class GameEngine:
                         self.evaluate_and_settle()
                         return
 
-                    # AI counter-move
-                    ai = OpponentAI(self.board)
-                    move = ai.get_best_move()
-                    if move:
-                        self.board.place_at(move[0], move[1], OPPONENT_O)
+                    # Quick Draw can skip the AI's response.
+                    skip_stack = pl.player.upgrades.get("skip_opponent", 0)
+                    if skip_stack > 0:
+                        pl.player.upgrades["skip_opponent"] = skip_stack - 1
+                    else:
+                        ai = OpponentAI(self.board)
+                        move = ai.get_best_move()
+                        if move:
+                            self.board.place_at(move[0], move[1], OPPONENT_O)
+
+                    # Poison ticks down after the AI takes its turn.
+                    if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "poison":
+                        self.board.tick_poison()
 
                     if self._should_evaluate():
                         self.evaluate_and_settle()

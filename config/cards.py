@@ -80,7 +80,7 @@ ALL_CARDS: list[CardDef] = [
     ),
     CardDef(
         "Overload", 3,
-        "Every X you place destroys all adjacent O's",
+        "Once per game per copy: when you place an X next to O's, destroys them",
         "action",
         triggers=("on_x_placed",),
     ),

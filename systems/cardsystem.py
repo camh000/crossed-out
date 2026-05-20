@@ -49,12 +49,13 @@ class CardSystem:
                 player.upgrades[key] = player.upgrades.get(key, 0) + 1
         # Per-game consumables — re-seeded each start.
         player.upgrades["sacrifice_charges"] = player.passive_cards.count("Sacrifice")
+        player.upgrades["overload_charges"] = player.passive_cards.count("Overload")
         player.upgrades["skip_opponent"] = 0  # Quick Draw repopulates on game start.
 
     def post_game_cleanup(self, player: Player) -> None:
         """Wipe per-game scratch state. Persistent buff stacks survive — they
         get re-applied via `apply_passive_buffs` next game."""
-        one_shot_keys = ("skip_opponent", "sacrifice_charges")
+        one_shot_keys = ("skip_opponent", "sacrifice_charges", "overload_charges")
         for key in one_shot_keys:
             player.upgrades.pop(key, None)
         player.blind_shot_marks = []
@@ -365,6 +366,14 @@ def _trigger_ricochet_on_x(board, player: Player, r: int, c: int, stacks: int) -
 
 
 def _trigger_overload_on_x(board, player: Player, r: int, c: int, stacks: int) -> None:
+    """Wipe adjacent O's, but only if a charge is available — one charge
+    per Overload copy per game. Spending a charge requires that at least
+    one O was actually destroyed, so the player doesn't waste a charge
+    on placements with no nearby opponent marks."""
+    charges = player.upgrades.get("overload_charges", 0)
+    if charges <= 0:
+        return
+    destroyed = False
     for dr in (-1, 0, 1):
         for dc in (-1, 0, 1):
             if dr == 0 and dc == 0:
@@ -372,6 +381,10 @@ def _trigger_overload_on_x(board, player: Player, r: int, c: int, stacks: int) -
             nr, nc = r + dr, c + dc
             if (nr, nc) in board.valid_cells and board.grid[nr][nc] == OPPONENT_O:
                 board.grid[nr][nc] = EMPTY
+                board.placed_at[nr][nc] = -1
+                destroyed = True
+    if destroyed:
+        player.upgrades["overload_charges"] = charges - 1
 
 
 # --- on_line_completed ------------------------------------------------------

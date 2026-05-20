@@ -183,6 +183,43 @@ class TestXPlacedTriggers:
         assert board.grid[0][0] == EMPTY
         assert board.grid[0][2] == EMPTY
 
+    def test_overload_consumes_one_charge_per_use(self):
+        """One copy = one use per game. Second X placement next to an O
+        no longer fires."""
+        cs = CardSystem()
+        player = Player(passive_cards=["Overload"])
+        cs.apply_passive_buffs(player)
+        board = Board()
+        # First X next to an O → wipes it, consumes the charge.
+        board.grid[0][0] = OPPONENT_O
+        board.place_at(1, 1, PLAYER_X)
+        cs.fire_x_placed(board, player, 1, 1)
+        assert board.grid[0][0] == EMPTY
+        assert player.upgrades["overload_charges"] == 0
+        # Second X next to another O → charge is gone, O survives.
+        board.grid[2][2] = OPPONENT_O
+        board.place_at(2, 1, PLAYER_X)
+        cs.fire_x_placed(board, player, 2, 1)
+        assert board.grid[2][2] == OPPONENT_O
+
+    def test_overload_charge_not_consumed_without_targets(self):
+        """If no adjacent O exists, the charge isn't spent — the player
+        keeps it for a turn where it actually matters."""
+        cs = CardSystem()
+        player = Player(passive_cards=["Overload"])
+        cs.apply_passive_buffs(player)
+        board = Board()
+        # Place X with no nearby O's.
+        board.place_at(1, 1, PLAYER_X)
+        cs.fire_x_placed(board, player, 1, 1)
+        assert player.upgrades["overload_charges"] == 1
+
+    def test_overload_stacks_grant_charges_per_copy(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Overload", "Overload", "Overload"])
+        cs.apply_passive_buffs(player)
+        assert player.upgrades["overload_charges"] == 3
+
 
 # ----------------------------------------------------------------------
 # on_line_completed triggers

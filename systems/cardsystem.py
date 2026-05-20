@@ -356,6 +356,11 @@ class CardSystem:
         rmax = max((rr for (rr, _) in board.valid_cells), default=0)
         cmin = min((cc for (_, cc) in board.valid_cells), default=0)
         cmax = max((cc for (_, cc) in board.valid_cells), default=0)
+        if centre is None:
+            # Centripetal / centre-bonus checks default to the geometric
+            # centre of the playable region. The Inverse boss passes its
+            # own explicit centre, but otherwise we infer.
+            centre = ((rmin + rmax) // 2, (cmin + cmax) // 2)
 
         def _on_edge(line) -> bool:
             return all(

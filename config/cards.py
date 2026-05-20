@@ -111,6 +111,147 @@ ALL_CARDS: list[CardDef] = [
         "defensive", 1.4,
         triggers=("on_would_lose_game",),
     ),
+    # --- Additional pure scoring buffs (no new triggers) -----------------
+    CardDef(
+        "Edge Lord", 4,
+        "Lines along the outer edge score +50% ink (per copy)",
+        "buff",
+    ),
+    CardDef(
+        "Centripetal", 4,
+        "Lines through the centre cell score +5 ink (per copy)",
+        "buff",
+    ),
+    CardDef(
+        "Long Bow", 5,
+        "Lines at the base size score +100% ink on a grown board (per copy)",
+        "buff", 1.3,
+    ),
+    CardDef(
+        "First Strike", 3,
+        "Your FIRST X line each game scores +20 ink (per copy)",
+        "bonus",
+    ),
+    CardDef(
+        "Last Stand", 5,
+        "When you have 1 life left, +50% ink (per copy)",
+        "power", 1.5,
+    ),
+    CardDef(
+        "Crescendo", 4,
+        "Mult +0.2 per X line scored this game (per copy)",
+        "buff",
+    ),
+    CardDef(
+        "Magnitude", 4,
+        "Mult +1 when the board has grown past 5x5 (per copy)",
+        "buff",
+    ),
+    CardDef(
+        "Lethal", 5,
+        "Mult +0.5 on boss games (per copy)",
+        "power", 1.4,
+    ),
+    # --- Build-around / set-bonus buffs ----------------------------------
+    CardDef(
+        "Quartet", 6,
+        "If you own 4+ distinct jokers, all X line ink x2",
+        "power", 1.6,
+    ),
+    CardDef(
+        "Rich Vein", 4,
+        "+10 ink per X line if you own 3+ distinct jokers (per copy)",
+        "bonus",
+    ),
+    CardDef(
+        "War Machine", 5,
+        "If you destroy 3+ O's this game, double Mult",
+        "power", 1.5,
+    ),
+    CardDef(
+        "Pacifist", 3,
+        "If you destroy 0 O's this game, +2 tokens on win (per copy)",
+        "bonus",
+    ),
+    # --- On-X-placed triggers --------------------------------------------
+    CardDef(
+        "Cascade", 5,
+        "Placing an X next to two of your X's spawns an extra X on the line's extension",
+        "action", 1.4,
+        triggers=("on_x_placed",),
+    ),
+    CardDef(
+        "Flame", 3,
+        "Once per game per copy: destroys orthogonally adjacent O's when you place an X",
+        "action",
+        triggers=("on_x_placed",),
+    ),
+    CardDef(
+        "Stutter", 3,
+        "Every 3rd X you place is mirrored to the opposite cell",
+        "action",
+        triggers=("on_x_placed",),
+    ),
+    CardDef(
+        "Magnet", 4,
+        "Every X you place pulls the nearest O one cell closer (per copy: pull one more O)",
+        "action",
+        triggers=("on_x_placed",),
+    ),
+    # --- On-AI-placed triggers (new hook) --------------------------------
+    CardDef(
+        "Counter", 3,
+        "Your next X line after the AI moves gets +2 ink (per copy)",
+        "buff",
+        triggers=("on_ai_placed",),
+    ),
+    CardDef(
+        "Vampire", 4,
+        "+1 token per O the AI plays this game, paid on win (per copy)",
+        "bonus",
+        triggers=("on_ai_placed",),
+    ),
+    CardDef(
+        "Interference", 5,
+        "Every 4th AI move re-rolls to a random empty cell (per copy reduces the interval)",
+        "strategy", 1.4,
+        triggers=("on_ai_placed",),
+    ),
+    # --- Defensive ------------------------------------------------------
+    CardDef(
+        "Phoenix", 6,
+        "Once per run, the first time the run would end, restore 1 life instead",
+        "defensive", 1.6,
+    ),
+    CardDef(
+        "Shield", 4,
+        "Boss ante target reduced by 20% (per copy, multiplicative)",
+        "defensive",
+    ),
+    CardDef(
+        "Patience", 4,
+        "Lose a full-board game with no X lines and gain a life instead (per copy)",
+        "defensive",
+    ),
+    # --- Shop / economy --------------------------------------------------
+    CardDef(
+        "Banker", 4,
+        "+1 token per 3 you already hold when the shop opens (per copy)",
+        "strategy",
+        triggers=("on_shop_open",),
+    ),
+    CardDef(
+        "Wholesaler", 3,
+        "Shop card cost -1 (min 1) per copy",
+        "strategy",
+        triggers=("on_shop_open",),
+    ),
+    # --- Cursed --------------------------------------------------------
+    CardDef(
+        "Cursed Coin", 0,
+        "Free joker. Drains 1 life every game start. Can't be removed.",
+        "strategy", 2.0,
+    ),
 ]
 
 

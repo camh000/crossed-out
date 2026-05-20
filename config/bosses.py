@@ -12,8 +12,8 @@ class BossDef:
 BOSS_LIST: list[BossDef] = [
     BossDef(
         "The Blind",
-        "You don't see their moves.",
-        "Opponent O marks are hidden (showed as '?'). Your own X's stay visible. The board is revealed at game end.",
+        "Your memory fades.",
+        "Marks fade behind '?' after 6 moves on the board. Recent moves stay visible; older ones become a memory test. Reveal at game end.",
         "blind",
     ),
     BossDef(

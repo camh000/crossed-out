@@ -25,6 +25,13 @@ JOKER_H = 90                          # tall enough for a name + stack badge
 JOKER_GAP = 10
 JOKER_ROW_Y = SCREEN_H - JOKER_H - 24  # 24 px from bottom
 
+# Blind boss: marks placed this many moves ago (or longer) render as "?".
+# Tuned so recent tactical context stays visible while older marks turn
+# into a memory burden. Scales naturally with grid size — bigger boards
+# play out more moves before a line forms, so more marks reach the
+# fade threshold at once.
+BLIND_FADE_AGE = 6
+
 
 class GameEngine:
     def __init__(self):
@@ -386,17 +393,23 @@ class GameEngine:
                     pygame.draw.rect(surf, (80, 180, 60), (x + avail // 2 - ps // 2, y + avail // 2 - ps // 2, ps, ps), border_radius=3)
 
                 val = self.board.grid[r][c]
-                # Blind boss: hide only the AI's moves. The player can
-                # still see their own X's, which keeps the boss winnable
-                # on grown boards where memorising both sides is too
-                # punishing. Result overlay reveals everything as usual.
-                blind_hide = (
+                # Blind boss: marks fade behind a "?" once they've been
+                # on the board for BLIND_FADE_AGE moves. Recent moves
+                # stay visible (so the player can still play tactically);
+                # older ones become a memory test. On grown grids, more
+                # moves elapse → more marks are obscured at any time, so
+                # the difficulty scales naturally with board size.
+                blind_hide = False
+                if (
                     pl.is_boss
                     and pl.current_boss
                     and pl.current_boss.mechanic == "blind"
                     and not self.showing_result
-                    and val == OPPONENT_O
-                )
+                    and val != 0
+                ):
+                    placed = self.board.placed_at[r][c]
+                    age = self.board.move_count - placed if placed >= 0 else 0
+                    blind_hide = age >= BLIND_FADE_AGE
                 if blind_hide:
                     q_font = pygame.font.SysFont("consolas", max(20, avail // 2), bold=True)
                     q_surf = q_font.render("?", True, TEXT_SUB)

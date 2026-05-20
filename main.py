@@ -186,21 +186,12 @@ class GameEngine:
         return None
 
     def _should_evaluate(self) -> bool:
-        """End the game on the first completed line, or when the board fills.
-
-        Mirror boss is the exception — the player fills the board for both
-        sides and the outcome depends on the net X−O line count, so play
-        continues even when a line forms mid-game.
-        """
-        if self.board.is_full():
-            return True
-        pl = self.engine.state
-        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "mirror":
-            return False
-        return (
-            self.board.count_lines_for(PLAYER_X) > 0
-            or self.board.count_lines_for(OPPONENT_O) > 0
-        )
+        """Game ends only when the board is full. Both sides play out
+        the whole bounding box and the outcome is decided by the line
+        count over the final state. This generalises what Mirror boss
+        used to do as a special case — first-line endings made the AI's
+        forced-draw behaviour on small grids feel like a solved game."""
+        return self.board.is_full()
 
     def evaluate_and_settle(self):
         pl = self.engine.state
@@ -216,7 +207,9 @@ class GameEngine:
 
         # Single ink × mult scoring pass for the current board state.
         ink, mult, total = self.card_system.score_breakdown(
-            self.board, pl.player, pl.get_multiplier(), is_boss=is_boss,
+            self.board, pl.player, pl.get_multiplier(),
+            is_boss=is_boss,
+            boss_mechanic=pl.current_boss.mechanic if pl.current_boss else None,
         )
         pl.last_ink = ink
         pl.last_mult = mult

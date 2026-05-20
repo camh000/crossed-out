@@ -322,6 +322,41 @@ class TestWildcardScoring:
         assert cs.calculate_score(board, buffed, 1) > 0
 
 
+class TestDoubleCrossScoring:
+    """The Double Cross boss flips opponent lines from negative to
+    positive ink — every line on the board counts toward your score."""
+
+    def test_o_lines_add_ink_under_doublecross(self):
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        # 1 X line and 1 O line on the same 3x3.
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        board.grid[2] = [OPPONENT_O, OPPONENT_O, OPPONENT_O]
+        plain_ink, _, _ = cs.score_breakdown(board, player, 1, is_boss=True)
+        dc_ink, _, _ = cs.score_breakdown(
+            board, player, 1, is_boss=True, boss_mechanic="doublecross",
+        )
+        # Plain boss: O lines subtract → net 0 (equal counts).
+        # Double Cross: O lines add → 2× the per-line ink.
+        assert plain_ink == 0
+        assert dc_ink > 0
+
+    def test_doublecross_only_in_boss_games(self):
+        """boss_mechanic is ignored when is_boss is False."""
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        board.grid[2] = [OPPONENT_O, OPPONENT_O, OPPONENT_O]
+        normal_ink, _, _ = cs.score_breakdown(
+            board, player, 1, is_boss=False, boss_mechanic="doublecross",
+        )
+        # is_boss=False so the doublecross flag has no effect — O lines
+        # still subtract.
+        assert normal_ink == 0
+
+
 class TestFinalCountScoring:
     def test_final_count_doubles_boss_ink(self):
         cs = CardSystem()

@@ -337,7 +337,10 @@ class TestMidGameWinDetection:
     @patch('pygame.display.set_mode')
     @patch('pygame.display.set_caption')
     @patch('pygame.time.get_ticks', return_value=1000)
-    def test_player_line_ends_game(self, mock_ticks, mock_caption, mock_mode, mock_init):
+    def test_line_does_not_end_game_until_board_fills(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """Under the first-to-fill rule, completing a line mid-game no
+        longer ends the round. Play continues until every valid cell
+        is occupied, and outcome is decided by total line count."""
         from main import GameEngine
         from game.board import PLAYER_X, OPPONENT_O
         engine = GameEngine()
@@ -345,22 +348,41 @@ class TestMidGameWinDetection:
             engine.new_run()
         engine.start_game()
         engine.state = "game"
-        # Pre-place 2 X's in row 0 and a couple of O's elsewhere so completing
-        # the X line doesn't also fill the board.
         engine.board.grid[0][0] = PLAYER_X
         engine.board.grid[0][1] = PLAYER_X
         engine.board.grid[1][0] = OPPONENT_O
         engine.board.grid[1][1] = OPPONENT_O
         engine.board.move_count = 4
-        # Player clicks (0, 2) — completes the X line. Board still has empty cells.
+        # Player clicks (0, 2) — completes an X line, but board has empties.
         avail, off_x, off_y = engine._board_layout()
         mx = off_x + 2 * avail + avail // 2
         my = off_y + 0 * avail + avail // 2
         engine.handle_click(mx, my, 1)
-        assert engine.engine.state.game_result == "win"
-        assert engine.showing_result is True
-        # Board should NOT be full — the win came from a line, not from filling.
+        # Game is NOT over — no result overlay, no game_result.
+        assert engine.engine.state.game_result is None
+        assert engine.showing_result is False
         assert engine.board.is_full() is False
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    @patch('pygame.time.get_ticks', return_value=1000)
+    def test_full_board_with_more_x_lines_wins(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """A filled board with 1 X line and 0 O lines settles as a win."""
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        engine = GameEngine()
+        engine.board.reset(3)
+        pl = engine.engine.state
+        pl.is_boss = False
+        # 1 X line in row 0, no O lines. Everything else filled.
+        engine.board.grid = [
+            [PLAYER_X, PLAYER_X, PLAYER_X],
+            [OPPONENT_O, PLAYER_X, OPPONENT_O],
+            [PLAYER_X, OPPONENT_O, PLAYER_X],
+        ]
+        result = engine.evaluate_and_settle()
+        assert result == "win"
 
     @patch('pygame.init')
     @patch('pygame.display.set_mode')

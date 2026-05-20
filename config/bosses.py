@@ -18,8 +18,8 @@ BOSS_LIST: list[BossDef] = [
     ),
     BossDef(
         "Double Cross",
-        "Neither side wins easily.",
-        "Both player and opponent score. The first to complete any line wins the round.",
+        "Every line counts for you.",
+        "Every line on the board this round — yours and the opponent's — adds to your ink instead of subtracting.",
         "doublecross",
     ),
     BossDef(
@@ -49,7 +49,7 @@ BOSS_LIST: list[BossDef] = [
     BossDef(
         "Mirror",
         "Play against yourself.",
-        "You fill the board for both sides. Lines scored for X and O are both counted. Maximize your net score (X - O).",
+        "You place every mark on the board — both X and O. Maximise your net score (X lines minus O lines).",
         "mirror",
     ),
     BossDef(

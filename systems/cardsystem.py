@@ -119,12 +119,15 @@ class CardSystem:
         level_mult: int,
         *,
         is_boss: bool = False,
+        boss_mechanic: str | None = None,
     ) -> tuple[int, float, int]:
         """Compute (ink, mult, total) for the current board state.
 
         ink: additive component. Each player's completed line contributes
         (sum of cell weights × line length) ink, plus per-card flat bonuses.
-        Opponent lines subtract ink at the same base rate.
+        Opponent lines subtract ink at the same base rate — UNLESS the
+        Double Cross boss is active, in which case opponent lines add
+        ink instead (every line on the board counts toward your score).
 
         mult: multiplicative component. Starts at 1 + level_mult, grows
         with each multiplicative buff card.
@@ -148,8 +151,13 @@ class CardSystem:
             ink += player.upgrades.get("point_mult", 0) * 3
             ink += player.upgrades.get("deep_grid", 0)
 
+        double_cross = is_boss and boss_mechanic == "doublecross"
         for cells in o_lines:
-            ink -= self._line_base_ink(board, cells)
+            line_ink = self._line_base_ink(board, cells)
+            if double_cross:
+                ink += line_ink
+            else:
+                ink -= line_ink
 
         # Board Control floor — each copy adds size*size to a lower bound.
         bc = player.upgrades.get("board_control", 0)

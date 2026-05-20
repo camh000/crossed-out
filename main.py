@@ -15,7 +15,8 @@ from config.cards import pick_random, get_by_name
 from config.bosses import BOSS_LIST
 from renders.rendering import (
     draw_card, draw_score, draw_tokens,
-    draw_centered_text, draw_big_centered_text, draw_joker_chip,
+    draw_centered_text, draw_big_centered_text, draw_centered_multiline_text,
+    draw_joker_chip,
 )
 
 
@@ -354,7 +355,12 @@ class GameEngine:
             boss = pl.current_boss
             draw_big_centered_text(surf, "BOSS GAME", self.big_font, ACCENT_RED, 150)
             draw_centered_text(surf, boss.name, pygame.font.SysFont("consolas", 36), ACCENT_GOLD, 260)
-            draw_centered_text(surf, boss.desc, self.font, TEXT_SUB, 330)
+            # boss.desc can run several lines long — wrap it to the canvas
+            # width so the screen doesn't truncate mid-sentence.
+            draw_centered_multiline_text(
+                surf, boss.desc, self.font, TEXT_SUB, 330,
+                max_width=SCREEN_W - 80,
+            )
             cont = self.font.render("Click to continue", True, TEXT_SUB)
             surf.blit(cont, (SCREEN_W // 2 - cont.get_width() // 2, SCREEN_H - 80))
 

@@ -249,3 +249,16 @@ def draw_multiline_text(surface, text, font, color, x, y, max_width, max_lines=4
     for i, line_text in enumerate(lines[:max_lines]):
         ls = font.render(line_text, True, color)
         surface.blit(ls, (x, y + i * line_h))
+
+
+def draw_centered_multiline_text(surface, text, font, color, y, max_width, max_lines=8):
+    """Wrap `text` to fit `max_width` and render each line centred at `y`,
+    `y + line_h`, etc. Returns the y-coordinate immediately below the
+    last rendered line so the caller can stack additional content."""
+    lines = _wrap_lines(text or "", font, max_width)
+    line_h = font.get_linesize()
+    screen_mid = surface.get_width() // 2
+    for i, line_text in enumerate(lines[:max_lines]):
+        ls = font.render(line_text, True, color)
+        surface.blit(ls, (screen_mid - ls.get_width() // 2, y + i * line_h))
+    return y + min(len(lines), max_lines) * line_h

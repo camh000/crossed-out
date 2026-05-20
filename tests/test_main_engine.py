@@ -21,8 +21,9 @@ class TestMainEngineInit:
         assert isinstance(engine.card_system, object)
         assert engine.starter_cards == []
         assert engine.shop_cards == []
-        assert engine.card_played_this_turn is False
-        assert engine.player_placed_this_turn is False
+        # The hand mechanic is gone — these flags were removed.
+        assert not hasattr(engine, "card_played_this_turn")
+        assert not hasattr(engine, "player_placed_this_turn")
 
 
 class TestMainEngineRun:
@@ -40,12 +41,14 @@ class TestMainEngineRun:
     @patch('pygame.init')
     @patch('pygame.display.set_mode')
     @patch('pygame.display.set_caption')
-    def test_new_run_incorporates_unlocked(self, mock_caption, mock_mode, mock_init):
+    def test_new_run_seeds_empty_passive_cards(self, mock_caption, mock_mode, mock_init):
+        """A fresh run starts with no jokers — the starter screen picks
+        one before the first game starts."""
         from main import GameEngine
         engine = GameEngine()
-        with patch('main.get_unlocked_cards', return_value=["Point Multiplier"]):
+        with patch('main.get_unlocked_cards', return_value=[]):
             engine.new_run()
-        assert "Point Multiplier" in engine.engine.state.player.deck
+        assert engine.engine.state.player.passive_cards == []
 
 
 class TestStartGame:
@@ -817,7 +820,7 @@ class TestTimedBossAutoMoveTriggers:
         src = inspect.getsource(GameEngine.draw)
         # Find the timed-boss section and confirm the auto-move sits under
         # the timeout branch, not the 'remaining > 0' branch.
-        m = re.search(r'mechanic == "timed".*?# hand cards', src, re.DOTALL)
+        m = re.search(r'mechanic == "timed".*?(?=\n {8}elif self\.state)', src, re.DOTALL)
         assert m, "could not locate timed-boss block in GameEngine.draw"
         block = m.group(0)
         # The OpponentAI call should appear after an `else:` (the timeout
@@ -884,8 +887,8 @@ class TestLevelScoreResets:
 class TestCellLockOnGrownBoard:
     """Cell Lock used to drop the wall at (board.size//2, board.size//2),
     which is wrong once the board has grown via draws — that coordinate
-    may no longer be a valid cell. It now picks the geometric centre of
-    the playable region."""
+    may no longer be a valid cell. The joker trigger now picks the
+    geometric centre of the playable region."""
 
     def test_lock_centre_of_grown_board_lands_on_valid_cell(self):
         import random
@@ -898,13 +901,15 @@ class TestCellLockOnGrownBoard:
         for _ in range(3):
             board.grow_row_and_column()
         cs = CardSystem()
-        assert cs.apply_card("Cell Lock", board, Player()) is True
+        player = Player(passive_cards=["Cell Lock"])
+        cs.apply_passive_buffs(player)
+        cs.fire_game_start(board, player)
         assert len(board.wall_cells) == 1
         assert board.wall_cells[0] in board.valid_cells
 
 
 class TestFortressRandomPlacement:
-    """Fortress now picks a random empty cell, not sorted[0]."""
+    """Fortress trigger picks a random empty cell, not sorted[0]."""
 
     def test_fortress_visits_multiple_cells_over_trials(self):
         import random
@@ -917,7 +922,9 @@ class TestFortressRandomPlacement:
         for seed in range(64):
             random.seed(seed)
             board = Board(size=5)
-            cs.apply_card("Fortress", board, Player())
+            player = Player(passive_cards=["Fortress"])
+            cs.apply_passive_buffs(player)
+            cs.fire_game_start(board, player)
             placements.update(board.wall_cells)
         # If still picking sorted[0] every time, we'd only ever see (0, 0).
         assert len(placements) > 1

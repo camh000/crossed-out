@@ -66,12 +66,12 @@ class TestUnlockCards:
         unlocked = get_unlocked_cards()
         assert "Double Strike" not in unlocked
 
-    def test_unlock_o_flipper_at_5_wins(self):
+    def test_unlock_sacrifice_at_5_wins(self):
         save_progression(won=False, tokens_earned=0, levels_reached=1, cards_unlocked=[])
         for _ in range(5):
             save_progression(won=True, tokens_earned=1, levels_reached=1, cards_unlocked=[])
         unlocked = get_unlocked_cards()
-        assert "O Flipper" in unlocked
+        assert "Sacrifice" in unlocked
 
     def test_unlock_ghost_board_at_8_wins(self):
         save_progression(won=False, tokens_earned=0, levels_reached=1, cards_unlocked=[])
@@ -85,7 +85,7 @@ class TestUnlockCards:
         for _ in range(6):
             save_progression(won=True, tokens_earned=1, levels_reached=1, cards_unlocked=[])
         unlocked = get_unlocked_cards()
-        assert unlocked.count("O Flipper") == 1
+        assert unlocked.count("Sacrifice") == 1
 
     def test_preserves_cards_between_wins(self):
         save_progression(won=True, tokens_earned=1, levels_reached=1, cards_unlocked=["Double Strike"])

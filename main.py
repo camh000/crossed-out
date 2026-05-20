@@ -15,8 +15,15 @@ from config.cards import pick_random, get_by_name
 from config.bosses import BOSS_LIST
 from renders.rendering import (
     draw_card, draw_score, draw_tokens,
-    draw_centered_text, draw_big_centered_text,
+    draw_centered_text, draw_big_centered_text, draw_joker_chip,
 )
+
+
+# Layout constants for the joker row that replaced the old hand-card area.
+JOKER_W = CARD_W // 2 + 10           # ~92 px wide
+JOKER_H = 90                          # tall enough for a name + stack badge
+JOKER_GAP = 10
+JOKER_ROW_Y = SCREEN_H - JOKER_H - 24  # 24 px from bottom
 
 
 class GameEngine:
@@ -29,17 +36,14 @@ class GameEngine:
         self.big_font = pygame.font.SysFont("consolas", 56)
 
         self.engine = RogueliteEngine()
-        self.card_system = CardSystem(hand_size=4)
+        self.card_system = CardSystem()
 
         self.state = "menu"
         self.board = Board()
         self.hover_pos = None
         self.starter_cards = []
         self.shop_cards = []
-
-        # card slot tracking
-        self.card_played_this_turn = False
-        self.player_placed_this_turn = False
+        self.shop_full_flash_until = 0   # millisecond timestamp for "Full" flash
 
         # countdown state
         self.countdown_start = None
@@ -61,11 +65,8 @@ class GameEngine:
         # Fresh board for a fresh run — without this, growth from the
         # previous run would carry over into the new one's first game.
         self.board.reset(self.engine.state.get_grid_size())
-        pl = self.engine.state.player
-        pl.deck = self.card_system.generate_deck()
-        unlocked = get_unlocked_cards()
-        pl.deck.extend([c for c in unlocked if c not in pl.deck])
-        pl.deck = list(set(pl.deck))
+        # Starter joker pool — 3 random offers; the click handler in the
+        # transition state picks one to seed passive_cards.
         self.starter_cards = pick_random(3)
         self.state = "transition"
 
@@ -88,14 +89,12 @@ class GameEngine:
         pl.player.blind_shot_marks = []
         pl.player.cells_played = []
         pl.game_result = None
-        # Re-apply the player's persistent buff stack into upgrades so
-        # buff cards bought across runs feed into score_breakdown.
+        # Re-seed every passive joker's stack into the upgrade counters.
         self.card_system.apply_passive_buffs(pl.player)
-        # Top the player's hand up from their deck so they always have
-        # cards to play this game.
-        self.card_system.draw_hand(pl.player)
 
-        # every 3rd game is a boss
+        # every 3rd game is a boss — set the boss state BEFORE firing
+        # game-start triggers so on_game_start handlers see is_boss=True
+        # (some triggers may want to behave differently in boss games).
         if pl.games_in_level % 3 == 0:
             pl.boss_index = pl.games_in_level // 3 - 1
             boss = BOSS_LIST[pl.boss_index % len(BOSS_LIST)]
@@ -125,10 +124,21 @@ class GameEngine:
             self.state = "countdown"
             self.countdown_start = pygame.time.get_ticks()
 
+        # Fire on_game_start triggers (Cell Lock, Fortress, Ghost Board,
+        # Blind Shot, Double Strike, Quick Draw) AFTER boss setup so any
+        # walls / pre-placed X's land on the post-boss-setup board.
+        self.card_system.fire_game_start(self.board, pl.player)
+
     def do_shop(self):
         pl = self.engine.state
         pl.shop_phase = True
-        self.shop_cards = pick_random(4)
+        # Reset shop-only consumables, then let the on_shop_open jokers
+        # (Reroll, Card Draw) seed them for this visit.
+        pl.player.upgrades["free_rerolls"] = 0
+        pl.player.upgrades["shop_offer_extra"] = 0
+        self.card_system.fire_shop_open(pl.player)
+        offer_count = 4 + pl.player.upgrades.get("shop_offer_extra", 0)
+        self.shop_cards = pick_random(offer_count)
         self.state = "shop"
 
     def finish_run(self, won: bool):
@@ -181,6 +191,14 @@ class GameEngine:
         pl = self.engine.state
         is_boss = bool(pl.is_boss and pl.current_boss)
 
+        # Fire on_line_completed triggers (Chain Reaction) BEFORE scoring,
+        # so the line-extending flips count toward this game's ink.
+        x_lines_for_triggers = [
+            cells for (val, cells) in self.board.get_lines() if val == PLAYER_X
+        ]
+        for line in x_lines_for_triggers:
+            self.card_system.fire_line_completed(self.board, pl.player, line)
+
         # Single ink × mult scoring pass for the current board state.
         ink, mult, total = self.card_system.score_breakdown(
             self.board, pl.player, pl.get_multiplier(), is_boss=is_boss,
@@ -219,12 +237,23 @@ class GameEngine:
                     ]
                 self.board.game_over = False
                 self.showing_result = False
-                self.player_placed_this_turn = False
-                self.card_played_this_turn = False
                 pl.game_result = "draw"
                 self.draw_message_until = pygame.time.get_ticks() + 1500
                 self.draw_message_cell = None
                 return "draw"
+
+        # Sacrifice rescue — if the player owns a Sacrifice joker with a
+        # charge left, consume the charge, undo the last X they placed,
+        # and treat this as if the loss never happened (the game becomes
+        # a continuing draw on the post-undo board). Only applies to
+        # non-ante losses — losing the ante means the round is over.
+        if outcome == "lose" and not ante_failed:
+            if self.card_system.try_sacrifice_save(self.board, pl.player):
+                self.board.game_over = False
+                self.showing_result = False
+                pl.game_result = "draw"
+                self.draw_message_until = pygame.time.get_ticks() + 1500
+                return "saved"
 
         if outcome == "win":
             base_reward = 2
@@ -357,14 +386,16 @@ class GameEngine:
                     pygame.draw.rect(surf, (80, 180, 60), (x + avail // 2 - ps // 2, y + avail // 2 - ps // 2, ps, ps), border_radius=3)
 
                 val = self.board.grid[r][c]
-                # Blind boss: hide every placed mark behind a "?" until the
-                # game ends. The reveal only happens on the result overlay.
+                # Blind boss: hide only the AI's moves. The player can
+                # still see their own X's, which keeps the boss winnable
+                # on grown boards where memorising both sides is too
+                # punishing. Result overlay reveals everything as usual.
                 blind_hide = (
                     pl.is_boss
                     and pl.current_boss
                     and pl.current_boss.mechanic == "blind"
                     and not self.showing_result
-                    and val != 0
+                    and val == OPPONENT_O
                 )
                 if blind_hide:
                     q_font = pygame.font.SysFont("consolas", max(20, avail // 2), bold=True)
@@ -455,21 +486,8 @@ class GameEngine:
                     self.countdown_start = pygame.time.get_ticks()
                     if self._should_evaluate():
                         self.evaluate_and_settle()
-            # hand cards
-            hand = pl.player.hand
-            if hand:
-                sx = (SCREEN_W - (len(hand) * CARD_W + max(0, len(hand) - 1) * 12)) // 2
-                for i, name in enumerate(hand):
-                    card = get_by_name(name)
-                    cost_val = card.cost if card else 0
-                    cx = sx + i * (CARD_W + 12)
-                    cy = SCREEN_H - CARD_H - 40
-                    draw_card(
-                        surf, name, cost_val, card.desc if card else "",
-                        cx, cy, CARD_W, CARD_H,
-                        is_highlighted=(self.hover_pos == f"card:{i}"),
-                        can_afford=(pl.player.tokens >= cost_val),
-                    )
+            # joker row — read-only display of owned passive cards.
+            self._draw_joker_row(surf, pl)
 
             # transient "DRAW! Grid grows" banner — shows briefly after a draw
             # while play continues on the now-expanded board.
@@ -481,7 +499,7 @@ class GameEngine:
                 surf.blit(sub, (SCREEN_W // 2 - sub.get_width() // 2, 70))
 
             # result panel (win/lose only — draws keep the game going).
-            # Sits in the gap between the board and the hand cards so it
+            # Sits in the gap between the board and the joker row so it
             # never overlaps placed marks.
             if self.showing_result:
                 result = pl.game_result
@@ -489,9 +507,8 @@ class GameEngine:
                 if result in txt_map:
                     txt, col = txt_map[result]
                     board_bottom = off_y + self.board.rows * avail
-                    cards_top = SCREEN_H - CARD_H - 40
                     panel_top = board_bottom + 12
-                    panel_h = max(120, cards_top - panel_top - 12)
+                    panel_h = max(120, JOKER_ROW_Y - panel_top - 12)
                     panel_w = SCREEN_W - 40
                     panel_x = (SCREEN_W - panel_w) // 2
                     pygame.draw.rect(
@@ -525,7 +542,19 @@ class GameEngine:
 
         elif self.state == "shop":
             draw_centered_text(surf, "SHOP", pygame.font.SysFont("consolas", 40), ACCENT_GOLD, 50)
-            draw_tokens(surf, pl.player.tokens, SCREEN_W - 180, 80)
+            draw_tokens(surf, pl.player.tokens, SCREEN_W - 200, 30)
+            # Joker cap progress in the top-left.
+            cap_txt = self.font.render(
+                f"Jokers: {len(pl.player.passive_cards)}/{pl.joker_cap}", True, TEXT_COLOR,
+            )
+            surf.blit(cap_txt, (20, 40))
+            full_now = len(pl.player.passive_cards) >= pl.joker_cap
+            if full_now and pygame.time.get_ticks() < self.shop_full_flash_until:
+                flash = pygame.font.SysFont("consolas", 24).render(
+                    "JOKER ROW FULL", True, ACCENT_RED,
+                )
+                surf.blit(flash, (SCREEN_W // 2 - flash.get_width() // 2, 110))
+
             if self.shop_cards:
                 sx = (SCREEN_W - (len(self.shop_cards) * CARD_W + max(0, len(self.shop_cards) - 1) * 12)) // 2
                 for i, name in enumerate(self.shop_cards):
@@ -537,8 +566,20 @@ class GameEngine:
                         surf, name, cost_val, card.desc if card else "",
                         cx, cy, CARD_W, CARD_H,
                         is_highlighted=(self.hover_pos == f"shop:{i}"),
-                        can_afford=(pl.player.tokens >= cost_val),
+                        can_afford=(pl.player.tokens >= cost_val and not full_now),
                     )
+
+            # Owned jokers shown below the shop offers so the player can see
+            # what they already have while deciding.
+            self._draw_joker_row(surf, pl)
+
+            # Reroll button (free uses indicated when available).
+            reroll_btn = pygame.Rect(SCREEN_W // 2 - 230, SCREEN_H - 100, 140, 50)
+            pygame.draw.rect(surf, (60, 60, 100), reroll_btn, border_radius=8)
+            free = pl.player.upgrades.get("free_rerolls", 0)
+            reroll_label = f"Reroll (FREE x{free})" if free > 0 else "Reroll (2)"
+            rt = pygame.font.SysFont("sans-serif", 18).render(reroll_label, True, TEXT_COLOR)
+            surf.blit(rt, (reroll_btn.centerx - rt.get_width() // 2, reroll_btn.centery - rt.get_height() // 2))
 
             continue_btn = pygame.Rect(SCREEN_W // 2 - 80, SCREEN_H - 100, 160, 50)
             pygame.draw.rect(surf, ACCENT_GREEN, continue_btn, border_radius=8)
@@ -581,11 +622,14 @@ class GameEngine:
                 if cx <= mx <= cx + CARD_W and card_y <= my <= card_y + CARD_H:
                     card_name = self.starter_cards[i]
                     card = get_by_name(card_name)
-                    pl.player.hand.append(card_name)
-                    if card and pl.player.tokens >= card.cost and card.cost > 0:
-                        pl.player.tokens -= card.cost
-                    break
-            self.start_game()
+                    # The starter joker is FREE — no token deduction. It
+                    # goes straight into passive_cards so its triggers run
+                    # from the very first game.
+                    pl.player.passive_cards.append(card_name)
+                    self.start_game()
+                    return
+            # Click missed every card — ignore.
+            return
 
         elif self.state == "boss_intro":
             pl.game_result = None
@@ -610,8 +654,6 @@ class GameEngine:
                 run_ending = getattr(self, "_pending_run_end", False)
                 self.showing_result = False
                 pl.game_result = None
-                self.player_placed_this_turn = False
-                self.card_played_this_turn = False
                 self.card_system.post_game_cleanup(pl.player)
                 if run_ending:
                     self._pending_run_end = False
@@ -629,8 +671,6 @@ class GameEngine:
                 placed = self.board.place_at(row, col, PLAYER_X)
                 if placed:
                     pl.player.cells_played.append((row, col))
-                    pl.player.placed_on_turn += 1
-                    self.player_placed_this_turn = True
 
                     if pl.is_boss and pl.current_boss:
                         if pl.current_boss.mechanic == "swap" and self.board.move_count % 3 == 0:
@@ -639,6 +679,9 @@ class GameEngine:
                             self.countdown_start = pygame.time.get_ticks()
                         if pl.current_boss.mechanic == "poison" and (row, col) in self.board.poison_cells:
                             self.board.register_poison_hit(row, col, ttl=2)
+
+                    # Fire on_x_placed jokers (Ricochet, Overload).
+                    self.card_system.fire_x_placed(self.board, pl.player, row, col)
 
                     # End immediately if the player just completed a line
                     # (or filled the last cell).
@@ -664,21 +707,6 @@ class GameEngine:
                         self.evaluate_and_settle()
                         return
 
-            # check card click
-            hand = pl.player.hand
-            if hand and not self.showing_result and not self.player_placed_this_turn:
-                hx = (SCREEN_W - (len(hand) * CARD_W + max(0, len(hand) - 1) * 12)) // 2
-                for i, name in enumerate(hand):
-                    if hx + i * (CARD_W + 12) <= mx <= hx + i * (CARD_W + 12) + CARD_W and (SCREEN_H - CARD_H - 40) <= my <= (SCREEN_H - 40):
-                        card = get_by_name(name)
-                        if card and pl.player.tokens >= card.cost:
-                            # play the card - consume all tokens
-                            pl.player.tokens -= card.cost
-                            pl.player.hand.remove(name)
-                            self.card_system.apply_card(name, self.board, pl.player)
-                            self.player_placed_this_turn = True
-                        break
-
         elif self.state == "shop":
             if self.shop_cards:
                 sx = (SCREEN_W - (len(self.shop_cards) * CARD_W + max(0, len(self.shop_cards) - 1) * 12)) // 2
@@ -687,12 +715,31 @@ class GameEngine:
                     cy = SCREEN_H // 2 - CARD_H // 2 - 20
                     if cx <= mx <= cx + CARD_W and cy <= my <= cy + CARD_H:
                         card = get_by_name(name)
-                        if card and pl.player.tokens >= card.cost:
-                            pl.player.tokens -= card.cost
-                            pl.player.deck.append(card.name)
-                            pl.player.hand.append(card.name)
-                            self.shop_cards.pop(i)
+                        if not card:
                             break
+                        # Joker-cap gate — refuse the purchase visually if
+                        # the player is at their cap.
+                        if len(pl.player.passive_cards) >= pl.joker_cap:
+                            self.shop_full_flash_until = pygame.time.get_ticks() + 1200
+                            break
+                        if pl.player.tokens >= card.cost:
+                            pl.player.tokens -= card.cost
+                            pl.player.passive_cards.append(card.name)
+                            self.shop_cards.pop(i)
+                        break
+
+            # Reroll button — free if free_rerolls remain, else REROLL_COST.
+            reroll_btn = pygame.Rect(SCREEN_W // 2 - 230, SCREEN_H - 100, 140, 50)
+            if reroll_btn.collidepoint(mx, my):
+                free = pl.player.upgrades.get("free_rerolls", 0)
+                if free > 0:
+                    pl.player.upgrades["free_rerolls"] = free - 1
+                    offer_count = 4 + pl.player.upgrades.get("shop_offer_extra", 0)
+                    self.shop_cards = pick_random(offer_count)
+                elif pl.player.tokens >= 2:
+                    pl.player.tokens -= 2
+                    offer_count = 4 + pl.player.upgrades.get("shop_offer_extra", 0)
+                    self.shop_cards = pick_random(offer_count)
 
             cont = pygame.Rect(SCREEN_W // 2 - 80, SCREEN_H - 100, 160, 50)
             if cont.collidepoint(mx, my):
@@ -705,23 +752,40 @@ class GameEngine:
         elif self.state == "gameover":
             self.state = "menu"
 
+    def _draw_joker_row(self, surf, pl):
+        """Compact, read-only display of the player's owned jokers.
+        Rendered at the bottom of the screen during gameplay and the shop.
+        Empty slots up to `joker_cap` are dashed outlines."""
+        # Collect unique jokers preserving purchase order.
+        unique: list[str] = []
+        seen: set[str] = set()
+        for name in pl.player.passive_cards:
+            if name not in seen:
+                unique.append(name)
+                seen.add(name)
+        slots = pl.joker_cap
+        total_w = slots * JOKER_W + (slots - 1) * JOKER_GAP
+        start_x = (SCREEN_W - total_w) // 2
+        for i in range(slots):
+            x = start_x + i * (JOKER_W + JOKER_GAP)
+            if i < len(unique):
+                name = unique[i]
+                count = pl.player.passive_cards.count(name)
+                draw_joker_chip(surf, name, count, x, JOKER_ROW_Y, JOKER_W, JOKER_H)
+            else:
+                # Empty slot — dashed outline.
+                pygame.draw.rect(
+                    surf, (50, 50, 70),
+                    (x, JOKER_ROW_Y, JOKER_W, JOKER_H), 1, border_radius=6,
+                )
+
     def handle_motion(self, mx, my):
         self.hover_pos = None
-        pl = self.engine.state
 
         if self.state in ("countdown", "game"):
             cell = self._cell_under(mx, my)
             if cell is not None:
                 self.hover_pos = cell
-
-            # check hand card hover
-            hand = pl.player.hand
-            if hand:
-                hx = (SCREEN_W - (len(hand) * CARD_W + max(0, len(hand) - 1) * 12)) // 2
-                for i, _ in enumerate(hand):
-                    cx = hx + i * (CARD_W + 12)
-                    if cx <= mx <= cx + CARD_W and (SCREEN_H - CARD_H - 40) <= my <= (SCREEN_H - 40):
-                        self.hover_pos = f"card:{i}"
 
     async def run(self):
         # Async so the browser event loop can yield each frame under

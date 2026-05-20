@@ -7,10 +7,12 @@ SAVE_PATH = os.path.join(
     "crossed_out_save.json",
 )
 
-# (win_threshold, card_name) — card unlocks at lifetime win count
+# (win_threshold, card_name) — joker unlocks at lifetime win count.
+# Replaced "O Flipper" (which was removed in the joker overhaul) with
+# "Sacrifice" so the unlock ladder still has a 5-win reward.
 _WIN_UNLOCKS: list[tuple[int, str]] = [
     (3, "Double Strike"),
-    (5, "O Flipper"),
+    (5, "Sacrifice"),
     (8, "Ghost Board"),
 ]
 

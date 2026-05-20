@@ -9,19 +9,21 @@ if TYPE_CHECKING:
 class Player:
     tokens: int = 0
     score: int = 0
-    deck: list[str] = field(default_factory=list)
-    hand: list[str] = field(default_factory=list)
+    # Stack counters for active passive effects (point_mult, diagonal_power,
+    # token_bonus, skip_opponent, sacrifice_charges, free_rerolls,
+    # shop_offer_extra, ...). Repopulated each game by
+    # `CardSystem.apply_passive_buffs`.
     upgrades: dict[str, int] = field(default_factory=dict)
-    # current game state
+    # Cells the player has placed (or had placed by triggers) this game.
+    # Used by Sacrifice to undo, and by triggers that need to mirror /
+    # explode around the most recent move.
     cells_played: list[tuple[int, int]] = field(default_factory=list)
-    placed_on_turn: int = 0
-    can_play_card: bool = True
-    # cards bought from the shop that persist across games and re-apply
-    # their buff every time start_game runs. One-shot action cards are not
-    # added here; only `CardDef.persistent` cards are.
+    # The owned jokers — every entry is a CardDef.name. Order is purchase
+    # order; duplicates allowed (the stack count comes from
+    # passive_cards.count(name)).
     passive_cards: list[str] = field(default_factory=list)
-    # cells placed by the "Blind Shot" card; if any of these cells end up
-    # in a completed X line, that line's ink is doubled.
+    # Marks placed by the Blind Shot joker this game. A completed X line
+    # containing any of these gets double ink.
     blind_shot_marks: list[tuple[int, int]] = field(default_factory=list)
 
 
@@ -34,13 +36,9 @@ class RunState:
     total_score: int = 0
     score_this_level: int = 0
     # Per-level cumulative ink targets — the run-end win check on level 3
-    # uses these. main.py overrides these to gameplay-tuned values during
-    # the starter-card screen.
+    # uses these.
     score_targets: list[int] = field(default_factory=lambda: [6, 12, 20])
-    # Per-boss ante targets — failing the boss ante ends the run. Tuned so
-    # that 1-2 X lines + a couple of buff stacks comfortably hits the
-    # level's ante: base ink ranges roughly 3..10 (lvl1), 5..25 (lvl2),
-    # 7..50 (lvl3) before multipliers.
+    # Per-boss ante targets — failing the boss ante ends the run.
     ante_targets: list[int] = field(default_factory=lambda: [8, 30, 100])
     current_target: int = 0
     ante_target: int = 0
@@ -57,10 +55,11 @@ class RunState:
     # draw within the same game. 0 = run failed immediately.
     lives: int = 3
     max_lives: int = 3
+    # Cap on owned jokers. Shop refuses to sell more once reached.
+    joker_cap: int = 5
     # Per-game scratch state, reset in start_game.
     draws_this_game: int = 0
     score_this_game: int = 0
-    skip_opponent_moves: int = 0
     # Last evaluated score breakdown — for the UI to show "ink × mult".
     last_ink: int = 0
     last_mult: float = 1.0
@@ -89,7 +88,6 @@ class RunState:
         self.is_boss = False
         self.current_boss = None
         self.shop_phase = True
-        # Per-level counters reset so the next level scores from zero.
         self.score_this_level = 0
         if self.level > 3:
             self.run_complete = True
@@ -102,9 +100,6 @@ class RunState:
         self.is_boss = False
         self.shop_phase = False
         self.score_this_level = 0
-        self.player.hand = []
         self.player.cells_played = []
-        self.player.placed_on_turn = 0
-        self.player.can_play_card = True
         self.draw_multiplier = 1.0
         # passive_cards persist across levels — they're the player's build.

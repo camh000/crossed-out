@@ -16,7 +16,6 @@ class RogueliteEngine:
     def start_new_run(self):
         """Start a fresh run."""
         self.state = RunState()
-        self.state.player.deck = self.card_system.generate_deck()
         self.state.player.tokens = 5
         self.state.current_target = self.state.get_target()
         self.current_boss_mechanic = None

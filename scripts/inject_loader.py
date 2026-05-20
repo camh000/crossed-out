@@ -23,9 +23,12 @@ SENTINEL = "<!-- crossed-out:loader-injected -->"
 
 CSS = """\
 /* Crossed Out loading overlay — covers pygbag's default boot UI until
-   pygame actually starts drawing. Hide pygbag's transfer + infobox
-   panels so they don't bleed through. */
-#transfer, #infobox { display: none !important; }
+   pygame actually starts drawing. We hide pygbag's #transfer panel
+   (the "Downloading..." progress bar) but NOT #infobox — pygbag uses
+   that one to tell the user "Tap to start" during the audio-unlock
+   wait on mobile, and we route taps to our own UI instead.  */
+#transfer { display: none !important; }
+#infobox { display: none !important; }
 body { background: #07070f !important; }
 #cx-loader {
   position: fixed;
@@ -42,6 +45,9 @@ body { background: #07070f !important; }
   transition: opacity 600ms ease-out;
   user-select: none;
   -webkit-user-select: none;
+  /* Default cursor; taps on the overlay still propagate up to pygbag's
+     gesture listener — that's how the audio context unlocks. */
+  cursor: pointer;
 }
 #cx-loader.cx-hidden { opacity: 0; pointer-events: none; }
 #cx-loader h1 {
@@ -89,6 +95,28 @@ body { background: #07070f !important; }
   letter-spacing: 0.18em;
   text-transform: uppercase;
 }
+#cx-loader .cx-tap {
+  /* The "Tap to begin" prompt is hidden by default and revealed once
+     pygbag has finished initial loading and is waiting for the user
+     gesture. */
+  display: none;
+  margin-top: 28px;
+  padding: 14px 32px;
+  border: 2px solid #f0c040;
+  border-radius: 8px;
+  color: #f0c040;
+  font-size: clamp(14px, 4vw, 20px);
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  animation: cx-pulse 1.6s ease-in-out infinite;
+}
+#cx-loader.cx-await-tap .cx-tap { display: block; }
+#cx-loader.cx-await-tap .cx-status { color: #f0c040; }
+@keyframes cx-pulse {
+  0%, 100% { transform: scale(1.0); box-shadow: 0 0 0 0 rgba(240, 192, 64, 0.45); }
+  50%      { transform: scale(1.04); box-shadow: 0 0 22px 4px rgba(240, 192, 64, 0.25); }
+}
 #cx-loader .cx-bar {
   width: min(280px, 60vw);
   height: 4px;
@@ -108,7 +136,7 @@ body { background: #07070f !important; }
   100% { transform: translateX(380%); }
 }
 @media (prefers-reduced-motion: reduce) {
-  #cx-loader .cx-mark, #cx-loader .cx-bar > div { animation: none; }
+  #cx-loader .cx-mark, #cx-loader .cx-bar > div, #cx-loader .cx-tap { animation: none; }
 }
 """
 
@@ -125,22 +153,19 @@ OVERLAY = """\
   </div>
   <div class="cx-status">Loading runtime...</div>
   <div class="cx-bar"><div></div></div>
+  <div class="cx-tap">Tap to begin</div>
 </div>
 """
 
 
-# Hide the overlay once pygame has actually started drawing. We can't trust
-# `canvas.getBoundingClientRect()` because pygbag's default CSS gives both
-# canvases 100% width from the start — so any naive "canvas has size" check
-# returns true on frame zero and the overlay would vanish before the player
-# saw it. Instead we look at three converging signals:
-#   1. pygbag boots and hides its #infobox once the WASM bundle finishes
-#      installing and main.py starts running.
-#   2. pygame.display.set_mode rewrites the canvas `width` attribute from
-#      pygbag's seed value (1px) to the game's actual width (720). We wait
-#      until canvas.width is well above the seed.
-#   3. As a last resort, 30 s timeout so the player isn't stuck behind the
-#      splash if the runtime layout changes in a future pygbag release.
+# Loader hides only when pygbag explicitly sets inline
+# `#infobox.style.display = 'none'` (which is the line in pygbag's
+# default.tmpl after main.py starts running). Canvas-attribute checks
+# are unreliable because pygbag's HTML pre-creates a 720×1280 hidden
+# canvas, so any "canvas.width >= 100" probe fires on frame zero. The
+# infobox's text is also surfaced as our own "Tap to begin" prompt
+# during pygbag's user-gesture wait on mobile — and the tap on the
+# overlay propagates as a gesture so pygbag proceeds.
 SCRIPT = """\
 <script>
 (function () {
@@ -155,36 +180,45 @@ SCRIPT = """\
       if (loader.parentNode) loader.parentNode.removeChild(loader);
     }, 700);
   }
-  function gameReady() {
-    // Signal 1: pygbag's infobox is hidden — it sets display:none once
-    // python's main.py starts (see custom_site() in pygbag's default.tmpl).
-    var ib = document.getElementById('infobox');
-    if (ib) {
-      var ibStyle = window.getComputedStyle(ib);
-      if (ibStyle && ibStyle.display === 'none' && ib.style.display !== 'none') {
-        // Style display is "none" via computed style (our CSS forces it)
-        // but the inline style hasn't been set by pygbag yet. Don't trust.
-      } else if (ib.style.display === 'none') {
-        return true;
+  var infobox = document.getElementById('infobox');
+  var awaitingTap = false;
+  // pygbag overwrites #infobox.innerText with "Ready to start ! Please
+  // click/touch page" during the audio-context unlock wait on mobile.
+  // Surface that as our own "Tap to begin" prompt — and the tap on
+  // the overlay propagates up as a user gesture so pygbag proceeds.
+  function reflectInfobox() {
+    if (!infobox) return false;
+    var txt = (infobox.innerText || infobox.textContent || "").toLowerCase();
+    if (txt.indexOf("ready to start") >= 0
+        || txt.indexOf("please click") >= 0
+        || txt.indexOf("please touch") >= 0) {
+      if (!awaitingTap) {
+        awaitingTap = true;
+        loader.classList.add('cx-await-tap');
+        var status = loader.querySelector('.cx-status');
+        if (status) status.textContent = "Waiting for tap";
       }
+      return false;
     }
-    // Signal 2: pygame.display.set_mode resizes the canvas. The seed
-    // canvas starts at width="1px"; when pygame paints, it becomes the
-    // game width (720). Check every canvas — the actual pygame target
-    // may be either #canvas or #canvas3d depending on the SDL2 driver.
-    var canvases = document.getElementsByTagName('canvas');
-    for (var i = 0; i < canvases.length; i++) {
-      var c = canvases[i];
-      // Native canvas width — not CSS width. The intrinsic attribute is
-      // what pygame writes via set_mode.
-      if (c.width >= 100) return true;
-    }
+    // pygbag sets inline `display:none` on #infobox once main.py is
+    // running. Reliable "pygame has started drawing" signal — and the
+    // only one we trust, because the canvas attribute checks all fire
+    // too early thanks to pygbag's seed sizing.
+    if (infobox.style.display === "none") return true;
     return false;
   }
   var start = Date.now();
   function tick() {
-    if (gameReady()) { hide(); return; }
-    if (Date.now() - start > 30000) { hide(); return; }
+    if (reflectInfobox()) { hide(); return; }
+    // Backup tap prompt: if 8s have elapsed and we still haven't seen
+    // the pygbag "ready" message, show the tap prompt anyway — some
+    // boot paths unlock audio without changing the infobox text.
+    if (!awaitingTap && (Date.now() - start) > 8000) {
+      awaitingTap = true;
+      loader.classList.add('cx-await-tap');
+    }
+    // Hard cap: never trap the player behind the overlay forever.
+    if (Date.now() - start > 60000) { hide(); return; }
     requestAnimationFrame(tick);
   }
   requestAnimationFrame(function () { requestAnimationFrame(tick); });

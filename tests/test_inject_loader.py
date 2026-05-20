@@ -47,7 +47,10 @@ class TestInjection:
         assert "CROSSED OUT" in text
         # Hide-script must be present so the overlay actually disappears
         # once pygame starts drawing.
-        assert "gameReady" in text
+        assert "reflectInfobox" in text
+        # And the "Tap to begin" prompt must be present so mobile boots
+        # don't strand the user behind a silent loader.
+        assert "Tap to begin" in text
 
     def test_second_run_is_no_op(self, tmp_index):
         inject_loader.inject(tmp_index)

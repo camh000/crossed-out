@@ -664,7 +664,10 @@ class TestClickToAdvance:
         pl.current_target = 1
         engine.evaluate_and_settle()
         assert engine.showing_result is True
-        # Click overlay — should advance to next game (countdown), not shop
+        # First click during the result staging only skips the reveal.
+        engine.handle_click(100, 100, 1)
+        assert engine.showing_result is True
+        # Second click actually advances to the next game.
         engine.handle_click(100, 100, 1)
         assert engine.state == "countdown"
         assert pl.games_in_level == 2
@@ -691,7 +694,9 @@ class TestClickToAdvance:
         # is exercised separately.
         pl.ante_target = 0
         engine.evaluate_and_settle()
-        # Boss win → showing_result True with pl.is_boss True
+        # Boss win → showing_result True with pl.is_boss True.
+        # First click skips the staged reveal; second click advances.
+        engine.handle_click(100, 100, 1)
         engine.handle_click(100, 100, 1)
         assert engine.state == "shop"
         assert len(engine.shop_cards) == 4
@@ -1085,6 +1090,112 @@ class TestRunFailedReason:
         # The two failure modes must appear as branches in the result panel.
         assert "Failed boss ante" in src
         assert "Out of lives" in src
+
+
+class TestAIMoveScheduling:
+    """The AI's response is deferred by AI_MOVE_DELAY_MS so the player
+    sees their own X land before the opponent reacts. _tick_ai_move is
+    called at the top of each frame from run() and fires the deferred
+    move once the delay has elapsed."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_tick_ai_move_noop_when_unscheduled(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        engine._ai_move_at = None
+        # Should not raise, should not place anything.
+        engine._tick_ai_move()
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_tick_ai_move_waits_for_delay(self, mock_caption, mock_mode, mock_init):
+        """With the conftest pygame stub, get_ticks() returns 0. Setting
+        _ai_move_at into the future (1) means the tick should NOT fire;
+        setting it into the past (-1) means it SHOULD fire and clear."""
+        from main import GameEngine
+        engine = GameEngine()
+        engine.board.reset(3)
+        # Future deadline — no-op.
+        engine._ai_move_at = 1
+        engine._tick_ai_move()
+        assert engine._ai_move_at == 1
+        # Past deadline — fires and clears.
+        engine._ai_move_at = -1
+        engine._tick_ai_move()
+        assert engine._ai_move_at is None
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_player_click_schedules_ai_move(self, mock_caption, mock_mode, mock_init):
+        """A player click should NOT place an AI O in the same frame —
+        it should just schedule one."""
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        engine.start_game()
+        engine.state = "game"
+        avail, off_x, off_y = engine._board_layout()
+        mx = off_x + 1 * avail + avail // 2
+        my = off_y + 1 * avail + avail // 2
+        engine.handle_click(mx, my, 1)
+        # Player's X landed on (1, 1).
+        assert engine.board.grid[1][1] == PLAYER_X
+        # No AI O on the board yet — scheduled for the next frame.
+        assert all(
+            engine.board.grid[r][c] != OPPONENT_O
+            for r in range(3) for c in range(3)
+        )
+        assert engine._ai_move_at is not None
+
+
+class TestStagingSkip:
+    """The result panel stages ink → mult → total over ~1.1s. A click
+    during staging snaps the reveal to the final frame; a second click
+    actually advances state. This matches the Balatro convention."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_first_click_keeps_showing_result(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        engine.start_game()
+        engine.state = "game"
+        engine.board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        engine.evaluate_and_settle()
+        assert engine.showing_result is True
+        # First click — should NOT advance state because staging hasn't
+        # elapsed (clock is mocked at 0 in conftest).
+        engine.handle_click(100, 100, 1)
+        assert engine.showing_result is True
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_second_click_advances_after_skip(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        engine.start_game()
+        engine.state = "game"
+        engine.board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        engine.evaluate_and_settle()
+        engine.handle_click(100, 100, 1)  # skip staging
+        engine.handle_click(100, 100, 1)  # actually advance
+        assert engine.showing_result is False
 
 
 class TestBlindAI:

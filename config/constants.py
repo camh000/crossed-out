@@ -44,6 +44,10 @@ REROLL_COST = 2
 # timing
 TIMED_BOSS_DURATION = 5  # seconds per move
 GAME_DELAY_AFTER = 1200  # ms pause after game end
+# Delay between the player's X landing and the AI's O appearing. Gives
+# the placement animation room to play out so the player feels they
+# acted before the opponent responds.
+AI_MOVE_DELAY_MS = 280
 
 # font
 FONT_MAIN = None

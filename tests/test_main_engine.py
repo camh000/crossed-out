@@ -664,7 +664,10 @@ class TestClickToAdvance:
         pl.current_target = 1
         engine.evaluate_and_settle()
         assert engine.showing_result is True
-        # Click overlay — should advance to next game (countdown), not shop
+        # First click during the result staging only skips the reveal.
+        engine.handle_click(100, 100, 1)
+        assert engine.showing_result is True
+        # Second click actually advances to the next game.
         engine.handle_click(100, 100, 1)
         assert engine.state == "countdown"
         assert pl.games_in_level == 2
@@ -691,7 +694,9 @@ class TestClickToAdvance:
         # is exercised separately.
         pl.ante_target = 0
         engine.evaluate_and_settle()
-        # Boss win → showing_result True with pl.is_boss True
+        # Boss win → showing_result True with pl.is_boss True.
+        # First click skips the staged reveal; second click advances.
+        engine.handle_click(100, 100, 1)
         engine.handle_click(100, 100, 1)
         assert engine.state == "shop"
         assert len(engine.shop_cards) == 4
@@ -1147,6 +1152,50 @@ class TestAIMoveScheduling:
             for r in range(3) for c in range(3)
         )
         assert engine._ai_move_at is not None
+
+
+class TestStagingSkip:
+    """The result panel stages ink → mult → total over ~1.1s. A click
+    during staging snaps the reveal to the final frame; a second click
+    actually advances state. This matches the Balatro convention."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_first_click_keeps_showing_result(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        engine.start_game()
+        engine.state = "game"
+        engine.board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        engine.evaluate_and_settle()
+        assert engine.showing_result is True
+        # First click — should NOT advance state because staging hasn't
+        # elapsed (clock is mocked at 0 in conftest).
+        engine.handle_click(100, 100, 1)
+        assert engine.showing_result is True
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_second_click_advances_after_skip(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        pl = engine.engine.state
+        engine.start_game()
+        engine.state = "game"
+        engine.board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        engine.evaluate_and_settle()
+        engine.handle_click(100, 100, 1)  # skip staging
+        engine.handle_click(100, 100, 1)  # actually advance
+        assert engine.showing_result is False
 
 
 class TestBlindAI:

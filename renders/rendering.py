@@ -10,6 +10,26 @@ from config.constants import (
 import pygame
 
 
+# Pre-rendered SRCALPHA surfaces are expensive in WASM. Cache by the
+# parameters that uniquely identify them so repeated calls per frame
+# (e.g. the gold pulse on every cell in the joker row) hit the cache.
+_ALPHA_RECT_CACHE: dict[tuple, pygame.Surface] = {}
+
+
+def cached_alpha_rect(size: tuple[int, int], color_rgb: tuple[int, int, int],
+                      alpha: int, border_radius: int = 0) -> pygame.Surface:
+    """Return a cached SRCALPHA rect surface. Cells, panels and glows
+    that re-blit the same parameters reuse the same surface."""
+    key = (size, color_rgb, int(alpha), border_radius)
+    surf = _ALPHA_RECT_CACHE.get(key)
+    if surf is None:
+        surf = pygame.Surface(size, pygame.SRCALPHA)
+        pygame.draw.rect(surf, (*color_rgb, alpha), surf.get_rect(),
+                         border_radius=border_radius)
+        _ALPHA_RECT_CACHE[key] = surf
+    return surf
+
+
 def draw_board(surface: pygame.Surface, board: Board, cell_size: int, offset_x: int, offset_y: int):
     """Draw the game board."""
     for r in range(board.size):

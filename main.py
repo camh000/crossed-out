@@ -76,6 +76,12 @@ class GameEngine:
         # to the player's last move. None means no AI move is pending.
         self._ai_move_at: int | None = None
 
+        # Wall-clock anchor for the staged score reveal in the result
+        # panel: ink counts up first (0-400 ms), mult pops in
+        # (400-600 ms), total counts up last (500-1100 ms). Computed
+        # from `pygame.time.get_ticks() - self._result_anim_start`.
+        self._result_anim_start: int | None = None
+
     def new_run(self):
         self.engine.start_new_run()
         # Fresh board for a fresh run — without this, growth from the
@@ -143,7 +149,10 @@ class GameEngine:
         # Fire on_game_start triggers (Cell Lock, Fortress, Ghost Board,
         # Blind Shot, Double Strike, Quick Draw) AFTER boss setup so any
         # walls / pre-placed X's land on the post-boss-setup board.
-        self.card_system.fire_game_start(self.board, pl.player)
+        before_marks = self.board.move_count
+        fired = self.card_system.fire_game_start(self.board, pl.player)
+        self._animate_new_marks(before_move_count=before_marks)
+        self._animate_jokers(fired)
 
     def do_shop(self):
         pl = self.engine.state
@@ -186,6 +195,28 @@ class GameEngine:
             return (r, c)
         return None
 
+    def _animate_new_marks(self, before_move_count: int) -> None:
+        """Walk the board and fire a `mark:r,c` placement animation for
+        every cell whose `placed_at` stamp is strictly newer than the
+        supplied move_count. Catches placements from both direct calls
+        (player click, AI move) and trigger handlers (Ricochet, Blind
+        Shot, Double Strike). Idempotent — re-firing for an already
+        animating cell is a no-op."""
+        for r in range(self.board.rows):
+            for c in range(self.board.cols):
+                placed = self.board.placed_at[r][c]
+                if placed > before_move_count:
+                    self.animator.start(f"mark:{r},{c}", 150)
+
+    def _animate_jokers(self, fired_names: list[str]) -> None:
+        """Glow each joker chip whose trigger actually fired. The
+        move-count suffix lets the same joker glow again on a later
+        trigger without being suppressed by the first being still-active."""
+        for name in fired_names:
+            self.animator.start(
+                f"joker_glow:{name}:{self.board.move_count}", 600,
+            )
+
     def _tick_ai_move(self) -> None:
         """Run the AI's response if one was scheduled and its delay has
         elapsed. Called once per frame at the top of run()'s loop."""
@@ -195,10 +226,12 @@ class GameEngine:
             return
         self._ai_move_at = None
         pl = self.engine.state
+        before = self.board.move_count
         ai = OpponentAI(self.board, fade_age=self._ai_fade_age())
         move = ai.get_best_move()
         if move:
             self.board.place_at(move[0], move[1], OPPONENT_O)
+        self._animate_new_marks(before_move_count=before)
         # Poison ticks after the AI's turn — same as the old synchronous
         # flow, just deferred along with the move.
         if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "poison":
@@ -227,12 +260,17 @@ class GameEngine:
         is_boss = bool(pl.is_boss and pl.current_boss)
 
         # Fire on_line_completed triggers (Chain Reaction) BEFORE scoring,
-        # so the line-extending flips count toward this game's ink.
+        # so the line-extending flips count toward this game's ink. Track
+        # any new marks the triggers placed and the joker names that fired
+        # so the renderer can animate them in.
         x_lines_for_triggers = [
             cells for (val, cells) in self.board.get_lines() if val == PLAYER_X
         ]
+        before_marks = self.board.move_count
         for line in x_lines_for_triggers:
-            self.card_system.fire_line_completed(self.board, pl.player, line)
+            fired = self.card_system.fire_line_completed(self.board, pl.player, line)
+            self._animate_jokers(fired)
+        self._animate_new_marks(before_move_count=before_marks)
 
         # Single ink × mult scoring pass for the current board state.
         ink, mult, total = self.card_system.score_breakdown(
@@ -242,6 +280,10 @@ class GameEngine:
         )
         pl.last_ink = ink
         pl.last_mult = mult
+        # Capture THIS evaluation's total separately from the running
+        # game total so the score count-up animates from 0 to the value
+        # contributed by this round (not the cumulative).
+        pl.last_total = total
         pl.score_this_game += total
         pl.player.score += total
         pl.total_score += total
@@ -300,11 +342,28 @@ class GameEngine:
             pl.draw_multiplier = 1.0
         else:  # lose
             pl.draw_multiplier = 1.0
+            # The pip we're about to lose: index of the rightmost still-
+            # filled pip BEFORE we decrement. That's the one the player
+            # watches go out.
+            lost_pip_idx = pl.lives - 1
             pl.lives -= 1
+            self.animator.start(f"life_lost:{lost_pip_idx}", 500)
 
         pl.game_result = outcome
         self.showing_result = True
         self.board.game_over = True
+
+        # Staged result reveal: panel slides up; ink, mult, and total
+        # count in sequence. Anchor the wall-clock timer here so the
+        # renderer can compute each sub-phase's progress on read.
+        self._result_anim_start = pygame.time.get_ticks()
+        self.animator.start("result_panel", 400)
+
+        # Highlight every X line that's now on the board with a pulsing
+        # gold streak (rendered in the cell loop).
+        for line in x_lines_for_triggers:
+            line_id = "line_glow:" + "-".join(f"{r},{c}" for r, c in line)
+            self.animator.start(line_id, 800)
 
         # Run-ending failure modes — ante failure on a boss, or zero lives.
         if ante_failed or pl.lives <= 0:
@@ -454,12 +513,25 @@ class GameEngine:
                     )
                 elif val != 0:
                     color = COLOR_X if val == PLAYER_X else COLOR_O
+                    # Scale the mark in from 0 → 1 over its placement
+                    # animation. eased() returns 1.0 if the animation is
+                    # done or absent, so this is a no-op for old marks.
+                    scale = self.animator.eased(f"mark:{r},{c}")
                     if val == PLAYER_X:
-                        m = avail // 4
-                        pygame.draw.line(surf, color, (x + m, y + m), (x + avail - m, y + avail - m), 4)
-                        pygame.draw.line(surf, color, (x + m, y + avail - m), (x + avail - m, y + m), 4)
+                        m_full = avail // 4
+                        # Stroke endpoints retract from the cell centre
+                        # so the X "grows" outward as scale goes 0 → 1.
+                        cx = x + avail // 2
+                        cy = y + avail // 2
+                        half = (avail // 2 - m_full) * scale
+                        pygame.draw.line(surf, color,
+                                         (cx - half, cy - half), (cx + half, cy + half), 4)
+                        pygame.draw.line(surf, color,
+                                         (cx - half, cy + half), (cx + half, cy - half), 4)
                     else:
-                        pygame.draw.circle(surf, color, (x + avail // 2, y + avail // 2), avail // 3, 4)
+                        radius = max(1, int((avail // 3) * scale))
+                        pygame.draw.circle(surf, color,
+                                           (x + avail // 2, y + avail // 2), radius, 4)
 
                 # Weighted boss: print each cell's weight in the corner.
                 if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "weighted":
@@ -477,6 +549,38 @@ class GameEngine:
                 # newly-added cell glow during the draw transition
                 if new_cell_glow == (r, c):
                     pygame.draw.rect(surf, ACCENT_GOLD, (x, y, avail, avail), 3, border_radius=4)
+
+            # Line glow pass — draws a gold streak through each X line
+            # the player just completed. The colour modulates between
+            # gold and background as the animation eases out, so the
+            # line "pulses" before settling. Cheaper than alpha blits.
+            for anim_id in list(self.animator.entries):
+                if not anim_id.startswith("line_glow:"):
+                    continue
+                t = self.animator.eased(anim_id)
+                if t >= 1.0:
+                    continue
+                # 1.0 - t inverted curve: bright at the start, fades out.
+                bright = 1.0 - t
+                glow_col = (
+                    int(BG_COLOR[0] + (255 - BG_COLOR[0]) * bright),
+                    int(BG_COLOR[1] + (200 - BG_COLOR[1]) * bright),
+                    int(BG_COLOR[2] + (80 - BG_COLOR[2]) * bright),
+                )
+                # Parse "line_glow:r,c-r,c-r,c" back into cells.
+                cells = [
+                    tuple(int(n) for n in pair.split(","))
+                    for pair in anim_id[len("line_glow:"):].split("-")
+                ]
+                if len(cells) < 2:
+                    continue
+                r0, c0 = cells[0]
+                r1, c1 = cells[-1]
+                start_px = (off_x + c0 * avail + avail // 2,
+                            off_y + r0 * avail + avail // 2)
+                end_px = (off_x + c1 * avail + avail // 2,
+                          off_y + r1 * avail + avail // 2)
+                pygame.draw.line(surf, glow_col, start_px, end_px, 8)
 
             # score display
             draw_score(surf, pl.player.score, pl.current_target, 20, 30)
@@ -500,7 +604,33 @@ class GameEngine:
             for i in range(pl.max_lives):
                 cx = pips_x + pip_r + i * (pip_r * 2 + pip_gap)
                 cy = 14 + lives_label.get_height() // 2
-                if i < pl.lives:
+                # Life-loss animation: the pip we just lost briefly
+                # pulses bright, shakes ±3 px, then settles to hollow.
+                lost_id = f"life_lost:{i}"
+                if self.animator.is_active(lost_id):
+                    t = self.animator.eased(lost_id)
+                    # 0..0.4: bright red, full circle, slight grow.
+                    # 0.4..1.0: shrink + hollow out.
+                    import math as _math
+                    shake = int(3 * _math.sin(t * _math.pi * 6))
+                    if t < 0.4:
+                        bright = (255, 140, 140)
+                        grow_r = int(pip_r * (1.0 + 0.5 * (1.0 - t / 0.4)))
+                        pygame.draw.circle(surf, bright, (cx + shake, cy), grow_r)
+                    else:
+                        fade_t = (t - 0.4) / 0.6
+                        # Fade fill alpha and shrink slightly.
+                        radius = int(pip_r * (1.0 - 0.3 * fade_t))
+                        pygame.draw.circle(surf, (60, 60, 80), (cx + shake, cy), pip_r)
+                        pygame.draw.circle(surf, ACCENT_RED, (cx + shake, cy), pip_r, 2)
+                        if radius > 0:
+                            faded = (
+                                int(ACCENT_RED[0] * (1.0 - fade_t)),
+                                int(ACCENT_RED[1] * (1.0 - fade_t)),
+                                int(ACCENT_RED[2] * (1.0 - fade_t)),
+                            )
+                            pygame.draw.circle(surf, faded, (cx + shake, cy), radius)
+                elif i < pl.lives:
                     pygame.draw.circle(surf, ACCENT_RED, (cx, cy), pip_r)
                 else:
                     pygame.draw.circle(surf, (60, 60, 80), (cx, cy), pip_r)
@@ -527,10 +657,12 @@ class GameEngine:
                     ts = pygame.font.SysFont("consolas", 48).render(f"{remaining:.0f}", True, ACCENT_RED)
                     surf.blit(ts, (SCREEN_W // 2 - ts.get_width() // 2, 60))
                 else:
+                    before_marks = self.board.move_count
                     ai = OpponentAI(self.board, fade_age=self._ai_fade_age())
                     move = ai.get_best_move()
                     if move:
                         self.board.place_at(move[0], move[1], OPPONENT_O)
+                    self._animate_new_marks(before_move_count=before_marks)
                     self.countdown_start = pygame.time.get_ticks()
                     if self._should_evaluate():
                         self.evaluate_and_settle()
@@ -548,17 +680,24 @@ class GameEngine:
 
             # result panel (win/lose only — draws keep the game going).
             # Sits in the gap between the board and the joker row so it
-            # never overlaps placed marks.
+            # never overlaps placed marks. Slides up from below when
+            # first shown and stages the score reveal: ink counts up,
+            # then mult pops, then total counts up.
             if self.showing_result:
                 result = pl.game_result
                 txt_map = {"win": ("VICTORY!", ACCENT_GREEN), "lose": ("DEFEAT!", ACCENT_RED)}
                 if result in txt_map:
                     txt, col = txt_map[result]
                     board_bottom = off_y + self.board.rows * avail
-                    panel_top = board_bottom + 12
-                    panel_h = max(120, JOKER_ROW_Y - panel_top - 12)
+                    panel_top_base = board_bottom + 12
+                    panel_h = max(120, JOKER_ROW_Y - panel_top_base - 12)
                     panel_w = SCREEN_W - 40
                     panel_x = (SCREEN_W - panel_w) // 2
+
+                    # Slide-in: panel y offset eases panel_h → 0 over 400 ms.
+                    slide = 1.0 - self.animator.eased("result_panel")
+                    panel_top = int(panel_top_base + slide * panel_h)
+
                     pygame.draw.rect(
                         surf, (12, 12, 24), (panel_x, panel_top, panel_w, panel_h),
                         border_radius=10,
@@ -570,21 +709,59 @@ class GameEngine:
                     title_font = pygame.font.SysFont("consolas", 40)
                     ts = title_font.render(txt, True, col)
                     surf.blit(ts, (SCREEN_W // 2 - ts.get_width() // 2, panel_top + 8))
-                    ink_mult_text = f"Ink {pl.last_ink}  ×  Mult {pl.last_mult:g}  =  {pl.score_this_game}"
-                    bd = pygame.font.SysFont("consolas", 22).render(ink_mult_text, True, ACCENT_GOLD)
-                    surf.blit(bd, (SCREEN_W // 2 - bd.get_width() // 2, panel_top + 58))
-                    if self._pending_run_end:
+
+                    # Staged score reveal — read elapsed time off the
+                    # anchor stamped in evaluate_and_settle.
+                    elapsed = (
+                        pygame.time.get_ticks() - self._result_anim_start
+                        if self._result_anim_start is not None else 9999
+                    )
+                    ink_t = max(0.0, min(1.0, elapsed / 400))
+                    mult_t = max(0.0, min(1.0, (elapsed - 400) / 200))
+                    total_t = max(0.0, min(1.0, (elapsed - 500) / 600))
+                    # ease-out-quart for the counters; pop for mult.
+                    ink_eased = 1 - (1 - ink_t) ** 4
+                    total_eased = 1 - (1 - total_t) ** 4
+
+                    displayed_ink = int(ink_eased * pl.last_ink)
+                    displayed_total = int(total_eased * getattr(pl, "last_total", pl.score_this_game))
+
+                    # Render ink first; mult appears at +400ms; total at +500ms.
+                    score_font = pygame.font.SysFont("consolas", 26)
+                    ink_surf = score_font.render(f"Ink {displayed_ink}", True, ACCENT_GOLD)
+                    surf.blit(ink_surf, (SCREEN_W // 2 - ink_surf.get_width() // 2, panel_top + 58))
+
+                    if mult_t > 0:
+                        # Pop scale 1.4 → 1.0 during mult_t 0..1.
+                        scale = 1.0 + 0.4 * (1.0 - mult_t)
+                        mult_size = max(16, int(20 * scale))
+                        mult_font = pygame.font.SysFont("consolas", mult_size)
+                        mult_surf = mult_font.render(f"x  Mult {pl.last_mult:g}", True, ACCENT_GOLD)
+                        surf.blit(mult_surf,
+                                  (SCREEN_W // 2 - mult_surf.get_width() // 2, panel_top + 92))
+
+                    if total_t > 0:
+                        total_font = pygame.font.SysFont("consolas", 30, bold=True)
+                        total_surf = total_font.render(
+                            f"= {displayed_total}", True, ACCENT_GREEN if result == "win" else ACCENT_RED,
+                        )
+                        surf.blit(total_surf,
+                                  (SCREEN_W // 2 - total_surf.get_width() // 2, panel_top + 130))
+
+                    # Footer (reason / continue) only after staging done.
+                    staging_done = total_t >= 1.0
+                    if staging_done and self._pending_run_end:
                         reason = (
                             "Failed boss ante" if pl.is_boss and pl.score_this_game < pl.ante_target
                             else "Out of lives"
                         )
                         rs = self.font.render(reason, True, ACCENT_RED)
-                        surf.blit(rs, (SCREEN_W // 2 - rs.get_width() // 2, panel_top + 88))
+                        surf.blit(rs, (SCREEN_W // 2 - rs.get_width() // 2, panel_top + 170))
                         end_txt = self.font.render(
                             "Run failed — click to return to menu", True, TEXT_SUB,
                         )
                         surf.blit(end_txt, (SCREEN_W // 2 - end_txt.get_width() // 2, panel_top + panel_h - 28))
-                    else:
+                    elif staging_done:
                         cont = self.font.render("Click to continue", True, TEXT_SUB)
                         surf.blit(cont, (SCREEN_W // 2 - cont.get_width() // 2, panel_top + panel_h - 28))
 
@@ -696,11 +873,26 @@ class GameEngine:
             return
 
         elif self.state == "game":
-            # If we're displaying a result overlay, any click advances to the next phase.
+            # If we're displaying a result overlay: the first click while
+            # the staged reveal is still playing snaps to the end frame
+            # (player wants to skip ahead). The next click advances
+            # state. Compare elapsed against the slowest sub-anim (total
+            # finishes at +1100 ms).
             if self.showing_result:
+                staging_done = (
+                    self._result_anim_start is None
+                    or (pygame.time.get_ticks() - self._result_anim_start) >= 1100
+                )
+                if not staging_done:
+                    # Snap staging to its final frame and let the next
+                    # click actually dismiss the panel.
+                    self._result_anim_start = pygame.time.get_ticks() - 1100
+                    self.animator.finish("result_panel")
+                    return
                 was_boss = pl.is_boss
                 run_ending = getattr(self, "_pending_run_end", False)
                 self.showing_result = False
+                self._result_anim_start = None
                 pl.game_result = None
                 self.card_system.post_game_cleanup(pl.player)
                 if run_ending:
@@ -716,6 +908,11 @@ class GameEngine:
             cell = self._cell_under(mx, my)
             if cell is not None and self.board.grid[cell[0]][cell[1]] == 0:
                 row, col = cell
+                # Capture the move_count BEFORE placement so we can
+                # detect all marks landed during this turn (player's X
+                # plus any triggered placements from Ricochet / Blind
+                # Shot / Double Strike etc).
+                before_marks = self.board.move_count
                 placed = self.board.place_at(row, col, PLAYER_X)
                 if placed:
                     pl.player.cells_played.append((row, col))
@@ -731,8 +928,12 @@ class GameEngine:
                         if pl.current_boss.mechanic == "poison" and (row, col) in self.board.poison_cells:
                             self.board.register_poison_hit(row, col, ttl=2)
 
-                    # Fire on_x_placed jokers (Ricochet, Overload).
-                    self.card_system.fire_x_placed(self.board, pl.player, row, col)
+                    # Fire on_x_placed jokers (Ricochet, Overload). Any
+                    # triggered placements bump move_count and stamp
+                    # their cells, so _animate_new_marks catches them.
+                    fired = self.card_system.fire_x_placed(self.board, pl.player, row, col)
+                    self._animate_new_marks(before_move_count=before_marks)
+                    self._animate_jokers(fired)
 
                     # End immediately if the player just completed a line
                     # (or filled the last cell).

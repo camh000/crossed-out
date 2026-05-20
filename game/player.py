@@ -61,8 +61,11 @@ class RunState:
     draws_this_game: int = 0
     score_this_game: int = 0
     # Last evaluated score breakdown — for the UI to show "ink × mult".
+    # `last_total` is THIS evaluation's contribution (not cumulative);
+    # the score count-up animation interpolates 0 → last_total.
     last_ink: int = 0
     last_mult: float = 1.0
+    last_total: int = 0
     player: Player = field(default_factory=Player)
 
     def get_grid_size(self) -> int:

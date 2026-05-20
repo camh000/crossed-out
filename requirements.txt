@@ -1,0 +1,4 @@
+# Runtime dependency. pygame-ce is a maintained fork of pygame that pygbag
+# requires for WebAssembly builds; on desktop it is a drop-in replacement
+# (same `import pygame`).
+pygame-ce>=2.4.0

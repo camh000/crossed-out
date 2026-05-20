@@ -8,4 +8,6 @@ dist/
 build/
 venv/
 .venv/
-save/
+.env
+.DS_Store
+.vercel

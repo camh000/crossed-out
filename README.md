@@ -34,10 +34,29 @@ On RDP/headless systems, validation uses `SDL_VIDEODRIVER=dummy`.
 ## Test
 
 ```powershell
-pip install pytest
+pip install -r requirements-dev.txt
 cd crossed-out
 python -m pytest tests/
 ```
+
+## Web build (iPhone / browser)
+
+The game compiles to WebAssembly via [pygbag](https://pygame-web.github.io/)
+and runs in any modern browser, including Safari on iOS. Touch maps to
+mouse, so no input changes are needed.
+
+```powershell
+pip install -r requirements-dev.txt
+python -m pygbag --build main.py        # produces build/web/
+python -m pygbag main.py                # local dev server on :8000
+```
+
+### Deploy to Vercel
+
+`vercel.json` is preconfigured for Vercel's static build. Connect the
+repo, accept the defaults, and Vercel runs `pygbag --build` and serves
+`build/web/`. The COOP/COEP headers required by WebAssembly threading
+are set in `vercel.json`.
 
 ## Architecture
 

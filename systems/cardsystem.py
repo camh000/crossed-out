@@ -86,6 +86,10 @@ class CardSystem:
             return True
         elif card_name == "Fortress":
             return self._fortress(board, player)
+        elif card_name == "Chain Reaction":
+            return self._chain_reaction(board, player)
+        elif card_name == "Ricochet":
+            return self._ricochet(board, player)
         return False
 
     def _double_strike(self, board, player: Player) -> bool:
@@ -167,6 +171,43 @@ class CardSystem:
             board.wall_cells.append((r, c))
             return True
         return False
+
+    def _chain_reaction(self, board, player: Player) -> bool:
+        """For each completed X line, flip adjacent O cells to X."""
+        flipped = False
+        for val, cells in board.get_lines():
+            if val != PLAYER_X:
+                continue
+            for r, c in cells:
+                for dr in (-1, 0, 1):
+                    for dc in (-1, 0, 1):
+                        if dr == 0 and dc == 0:
+                            continue
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < board.size and 0 <= nc < board.size:
+                            if board.grid[nr][nc] == OPPONENT_O:
+                                board.grid[nr][nc] = PLAYER_X
+                                flipped = True
+        return flipped
+
+    def _ricochet(self, board, player: Player) -> bool:
+        """Place X on a random empty edge cell; if the opposite edge cell is also empty, place there too."""
+        edges = [
+            (r, c) for r in range(board.size) for c in range(board.size)
+            if (r in (0, board.size - 1) or c in (0, board.size - 1)) and board.grid[r][c] == 0
+        ]
+        if not edges:
+            return False
+        import random
+        r, c = random.choice(edges)
+        if not board.place_at(r, c, PLAYER_X):
+            return False
+        player.cells_played.append((r, c))
+        opp_r, opp_c = board.size - 1 - r, board.size - 1 - c
+        if board.grid[opp_r][opp_c] == 0:
+            if board.place_at(opp_r, opp_c, PLAYER_X):
+                player.cells_played.append((opp_r, opp_c))
+        return True
 
     # Scoring helpers
     def calculate_score(self, board, player: Player, multiplier: int):

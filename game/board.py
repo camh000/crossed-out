@@ -2,8 +2,6 @@ import random
 from dataclasses import dataclass, field
 from typing import Optional
 
-from config.constants import COLOR_X, COLOR_O
-
 EMPTY = 0
 PLAYER_X = 1
 OPPONENT_O = -1
@@ -11,8 +9,20 @@ OPPONENT_O = -1
 
 @dataclass
 class Board:
+    """A tic-tac-toe board that can grow into an irregular polyomino.
+
+    `grid` is a rectangular bounding-box backing store; the actual playable
+    area is described by `valid_cells`. The board grows by adding adjacent
+    cells via `add_random_adjacent_cell`, which extends the bounding box if
+    the new cell falls outside the current grid.
+
+    `size` is the line-length target (3, 5, 7) and never changes after
+    reset(); growth does not change it. A "line" is `size` consecutive
+    same-mark cells in any of the four directions (row, col, two diagonals).
+    """
     grid: list[list[int]] = field(default_factory=list)
     size: int = 3
+    valid_cells: set[tuple[int, int]] = field(default_factory=set)
     wall_cells: list[tuple[int, int]] = field(default_factory=list)
     poison_cells: list[tuple[int, int]] = field(default_factory=list)
     locked_cells: list[tuple[int, int]] = field(default_factory=list)
@@ -21,12 +31,25 @@ class Board:
 
     def __post_init__(self):
         if not self.grid:
-            self.grid = [[EMPTY] * self.size for _ in range(self.size)]
+            self.reset(self.size)
+        elif not self.valid_cells:
+            self.valid_cells = {
+                (r, c) for r in range(len(self.grid)) for c in range(len(self.grid[0]))
+            }
+
+    @property
+    def rows(self) -> int:
+        return len(self.grid)
+
+    @property
+    def cols(self) -> int:
+        return len(self.grid[0]) if self.grid else 0
 
     def reset(self, size: int | None = None):
         if size is not None:
             self.size = size
         self.grid = [[EMPTY] * self.size for _ in range(self.size)]
+        self.valid_cells = {(r, c) for r in range(self.size) for c in range(self.size)}
         self.wall_cells = []
         self.poison_cells = []
         self.locked_cells = []
@@ -38,55 +61,67 @@ class Board:
     def place_at(self, r: int, c: int, val: int) -> bool:
         if self.game_over:
             return False
-        if not (0 <= r < self.size and 0 <= c < self.size):
+        if (r, c) not in self.valid_cells:
             return False
         if self.grid[r][c] != EMPTY:
             return False
         if (r, c) in self.wall_cells:
             return False
-        if val == PLAYER_X:
-            self.grid[r][c] = PLAYER_X
-            self.move_count += 1
-            return True
-        elif val == OPPONENT_O:
-            self.grid[r][c] = OPPONENT_O
+        if val == PLAYER_X or val == OPPONENT_O:
+            self.grid[r][c] = val
             self.move_count += 1
             return True
         return False
 
     def remove_at(self, r: int, c: int) -> int:
         """Remove cell and return its value."""
-        if 0 <= r < self.size and 0 <= c < self.size:
+        if (r, c) in self.valid_cells:
             val = self.grid[r][c]
             self.grid[r][c] = EMPTY
             return val
         return EMPTY
 
+    def _value(self, pos: tuple[int, int]) -> int:
+        if pos in self.valid_cells:
+            return self.grid[pos[0]][pos[1]]
+        return EMPTY
+
     def get_lines(self) -> list[tuple[int, list[tuple[int, int]]]]:
-        """Return all completed lines of same mark."""
-        lines = []
-        for val in [PLAYER_X, OPPONENT_O]:
-            # rows
-            for r in range(self.size):
-                if all(self.grid[r][c] == val for c in range(self.size)):
-                    lines.append((val, [(r, c) for c in range(self.size)]))
-            # cols
-            for c in range(self.size):
-                if all(self.grid[r][c] == val for r in range(self.size)):
-                    lines.append((val, [(r, c) for r in range(self.size)]))
-        # diagonals
-        for val in [PLAYER_X, OPPONENT_O]:
-            if all(self.grid[i][i] == val for i in range(self.size)):
-                lines.append((val, [(i, i) for i in range(self.size)]))
-            if all(self.grid[i][self.size - 1 - i] == val for i in range(self.size)):
-                lines.append((val, [(i, self.size - 1 - i) for i in range(self.size)]))
+        """Return all runs of exactly `size` consecutive same-mark cells.
+
+        Iterates over the four directions (→, ↓, ↘, ↙) starting from any
+        valid cell whose "previous" cell in that direction is not the same
+        mark — this prevents counting overlapping sub-runs of a longer run
+        more than once for the starting position, while still emitting one
+        line per overlapping `size`-window when a longer run exists.
+        """
+        lines: list[tuple[int, list[tuple[int, int]]]] = []
+        directions = [(0, 1), (1, 0), (1, 1), (1, -1)]
+        for val in (PLAYER_X, OPPONENT_O):
+            for (r, c) in self.valid_cells:
+                if self.grid[r][c] != val:
+                    continue
+                for dr, dc in directions:
+                    prev = (r - dr, c - dc)
+                    if prev in self.valid_cells and self.grid[prev[0]][prev[1]] == val:
+                        continue
+                    cells = []
+                    for i in range(self.size):
+                        nr, nc = r + i * dr, c + i * dc
+                        if (nr, nc) not in self.valid_cells:
+                            break
+                        if self.grid[nr][nc] != val:
+                            break
+                        cells.append((nr, nc))
+                    if len(cells) == self.size:
+                        lines.append((val, cells))
         return lines
 
     def count_lines_for(self, val: int) -> int:
         return sum(1 for v, _ in self.get_lines() if v == val)
 
     def count_empty(self) -> int:
-        return sum(1 for r in range(self.size) for c in range(self.size) if self.grid[r][c] == EMPTY)
+        return sum(1 for (r, c) in self.valid_cells if self.grid[r][c] == EMPTY)
 
     def is_full(self) -> bool:
         return self.count_empty() == 0
@@ -108,16 +143,65 @@ class Board:
 
     def get_weights(self) -> list[list[float]]:
         """Generate cell weights (1-5) for weighted boss."""
-        return [[int(random.uniform(1.0, 5.0)) for _ in range(self.size)] for _ in range(self.size)]
+        return [[int(random.uniform(1.0, 5.0)) for _ in range(self.cols)] for _ in range(self.rows)]
 
     def get_empty_cells(self) -> list[tuple[int, int]]:
-        return [(r, c) for r in range(self.size) for c in range(self.size) if self.grid[r][c] == EMPTY]
+        return [(r, c) for (r, c) in sorted(self.valid_cells) if self.grid[r][c] == EMPTY]
 
     def apply_swap(self):
         """Swap all X and O marks for Swap boss."""
-        for r in range(self.size):
-            for c in range(self.size):
-                if self.grid[r][c] == PLAYER_X:
-                    self.grid[r][c] = OPPONENT_O
-                elif self.grid[r][c] == OPPONENT_O:
-                    self.grid[r][c] = PLAYER_X
+        for (r, c) in self.valid_cells:
+            if self.grid[r][c] == PLAYER_X:
+                self.grid[r][c] = OPPONENT_O
+            elif self.grid[r][c] == OPPONENT_O:
+                self.grid[r][c] = PLAYER_X
+
+    def add_random_adjacent_cell(self) -> Optional[tuple[int, int]]:
+        """Add a random empty cell orthogonally adjacent to the playable area.
+
+        Grows the underlying grid (and shifts existing coordinates) if the
+        new cell falls outside the current bounding box. Returns the new
+        cell's position after any coordinate shift, or None if no candidates.
+        """
+        candidates: set[tuple[int, int]] = set()
+        for (r, c) in self.valid_cells:
+            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nb = (r + dr, c + dc)
+                if nb not in self.valid_cells:
+                    candidates.add(nb)
+        if not candidates:
+            return None
+        target = random.choice(sorted(candidates))
+        return self._absorb(target)
+
+    def _absorb(self, pos: tuple[int, int]) -> tuple[int, int]:
+        r, c = pos
+        row_shift = 0
+        col_shift = 0
+        # extend top
+        while r < 0:
+            self.grid.insert(0, [EMPTY] * self.cols)
+            r += 1
+            row_shift += 1
+        # extend bottom
+        while r >= self.rows:
+            self.grid.append([EMPTY] * self.cols)
+        # extend left
+        while c < 0:
+            for row in self.grid:
+                row.insert(0, EMPTY)
+            c += 1
+            col_shift += 1
+        # extend right
+        while c >= self.cols:
+            for row in self.grid:
+                row.append(EMPTY)
+
+        if row_shift or col_shift:
+            self.valid_cells = {(rr + row_shift, cc + col_shift) for (rr, cc) in self.valid_cells}
+            self.wall_cells = [(rr + row_shift, cc + col_shift) for (rr, cc) in self.wall_cells]
+            self.poison_cells = [(rr + row_shift, cc + col_shift) for (rr, cc) in self.poison_cells]
+            self.locked_cells = [(rr + row_shift, cc + col_shift) for (rr, cc) in self.locked_cells]
+
+        self.valid_cells.add((r, c))
+        return (r, c)

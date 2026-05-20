@@ -1,8 +1,8 @@
-import copy
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
-from config.constants import SCREEN_W, SCREEN_H
+if TYPE_CHECKING:
+    from config.bosses import BossDef
 
 
 @dataclass
@@ -33,8 +33,8 @@ class RunState:
     shop_phase: bool = False
     run_complete: bool = False
     won_run: bool = False
-    current_boss: any = None
-    current_boss_setup: any = None
+    current_boss: Optional["BossDef"] = None
+    current_boss_setup: Optional[str] = None
     game_result: str | None = None
     draw_multiplier: float = field(default_factory=lambda: 1.0)
     player: Player = field(default_factory=Player)

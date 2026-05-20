@@ -266,6 +266,166 @@ class TestCalculateScore:
         assert score == 0
 
 
+class TestChainReaction:
+    """Chain Reaction flips O cells orthogonally/diagonally adjacent to any X line."""
+
+    def test_flips_adjacent_o_after_x_line(self):
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.reset(3)
+        # X line in row 0; an O sitting next to it in row 1 col 1
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        board.grid[1][1] = OPPONENT_O
+        result = cs.apply_card("Chain Reaction", board, player)
+        assert result is True
+        assert board.grid[1][1] == PLAYER_X
+
+    def test_returns_false_with_no_adjacent_o(self):
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.reset(3)
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        # No O's anywhere
+        result = cs.apply_card("Chain Reaction", board, player)
+        assert result is False
+
+    def test_does_not_touch_distant_o(self):
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.reset(5)
+        # X line at row 0, O far away at row 4
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X, PLAYER_X, PLAYER_X]
+        board.grid[4][4] = OPPONENT_O
+        cs.apply_card("Chain Reaction", board, player)
+        assert board.grid[4][4] == OPPONENT_O
+
+    def test_flips_multiple_adjacent_o(self):
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.reset(3)
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        # Three O's all touching the X line on row 1
+        board.grid[1][0] = OPPONENT_O
+        board.grid[1][1] = OPPONENT_O
+        board.grid[1][2] = OPPONENT_O
+        cs.apply_card("Chain Reaction", board, player)
+        assert board.grid[1][0] == PLAYER_X
+        assert board.grid[1][1] == PLAYER_X
+        assert board.grid[1][2] == PLAYER_X
+
+    def test_no_x_line_no_effect(self):
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.reset(3)
+        # No completed X line; O scattered
+        board.grid[0][0] = PLAYER_X
+        board.grid[1][1] = OPPONENT_O
+        result = cs.apply_card("Chain Reaction", board, player)
+        assert result is False
+        assert board.grid[1][1] == OPPONENT_O
+
+
+class TestRicochet:
+    """Ricochet places X on a random edge and on the opposite edge if empty."""
+
+    def test_places_on_edge_and_opposite(self):
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.reset(3)
+        result = cs.apply_card("Ricochet", board, player)
+        assert result is True
+        # Two cells should have been placed (edge + opposite), all on the perimeter
+        xs = [(r, c) for r in range(3) for c in range(3) if board.grid[r][c] == PLAYER_X]
+        assert len(xs) == 2
+        for (r, c) in xs:
+            assert r in (0, 2) or c in (0, 2)
+        # Opposite-cell relationship: (r, c) and (size-1-r, size-1-c)
+        (r1, c1), (r2, c2) = sorted(xs)
+        assert (r2, c2) == (2 - r1, 2 - c1)
+
+    def test_records_both_cells_in_player_history(self):
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.reset(3)
+        cs.apply_card("Ricochet", board, player)
+        assert len(player.cells_played) == 2
+
+    def test_returns_false_with_no_empty_edges(self):
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.reset(3)
+        # Fill every edge cell with O so no empty edges remain
+        for r in range(3):
+            for c in range(3):
+                if r in (0, 2) or c in (0, 2):
+                    board.grid[r][c] = OPPONENT_O
+        result = cs.apply_card("Ricochet", board, player)
+        assert result is False
+
+    def test_opposite_occupied_only_places_one(self):
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.reset(3)
+        # Pre-fill (0,0) opposite at (2,2) with O so only the first edge cell gets X
+        board.grid[2][2] = OPPONENT_O
+        # Pre-fill all other edges except (0, 0) to force the random choice
+        for (r, c) in [(0, 1), (0, 2), (1, 0), (1, 2), (2, 0), (2, 1)]:
+            board.grid[r][c] = OPPONENT_O
+        result = cs.apply_card("Ricochet", board, player)
+        assert result is True
+        assert board.grid[0][0] == PLAYER_X
+        assert board.grid[2][2] == OPPONENT_O  # unchanged
+        assert len(player.cells_played) == 1
+
+
+class TestWildcardScoring:
+    """Wildcard buff: 'Lines with exactly 1 O count as your line'."""
+
+    @pytest.mark.xfail(
+        reason="Wildcard upgrade is recorded by apply_card but never consulted "
+               "by CardSystem.calculate_score; needs implementation.",
+        strict=True,
+    )
+    def test_wildcard_counts_line_with_one_o(self):
+        cs = CardSystem()
+        player = Player(upgrades={"wildcard": 1})
+        board = Board()
+        board.reset(3)
+        # Row with two X and one O — under wildcard, should count as an X line
+        board.grid[0] = [PLAYER_X, PLAYER_X, OPPONENT_O]
+        score = cs.calculate_score(board, player, 1)
+        assert score > 0
+
+
+class TestFinalCountScoring:
+    """Final Count buff: 'Boss game: lines score as length × 2'."""
+
+    @pytest.mark.xfail(
+        reason="Final Count upgrade is recorded but never consulted by "
+               "calculate_score; needs implementation.",
+        strict=True,
+    )
+    def test_final_count_doubles_line_score(self):
+        cs = CardSystem()
+        plain = Player()
+        buffed = Player(upgrades={"final_count": 2})
+        board = Board()
+        board.reset(3)
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        plain_score = cs.calculate_score(board, plain, 1)
+        buffed_score = cs.calculate_score(board, buffed, 1)
+        assert buffed_score > plain_score
+
+
 class TestPostGameCleanup:
     def test_cleanup_clears_temp_effects(self):
         cs = CardSystem()

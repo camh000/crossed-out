@@ -25,38 +25,35 @@ class OpponentAI:
         return None
 
     def _try_win(self) -> tuple[int, int] | None:
-        for r in range(self.board.size):
-            for c in range(self.board.size):
-                if self.board.grid[r][c] == 0:
-                    self.board.grid[r][c] = OPPONENT_O
-                    lines = self.board.count_lines_for(OPPONENT_O)
-                    self.board.grid[r][c] = 0
-                    if lines > 0:
-                        return (r, c)
+        for (r, c) in self.board.valid_cells:
+            if self.board.grid[r][c] == 0:
+                self.board.grid[r][c] = OPPONENT_O
+                lines = self.board.count_lines_for(OPPONENT_O)
+                self.board.grid[r][c] = 0
+                if lines > 0:
+                    return (r, c)
         return None
 
     def _try_block(self) -> tuple[int, int] | None:
-        for r in range(self.board.size):
-            for c in range(self.board.size):
-                if self.board.grid[r][c] == 0:
-                    self.board.grid[r][c] = PLAYER_X
-                    lines = self.board.count_lines_for(PLAYER_X)
-                    self.board.grid[r][c] = 0
-                    if lines > 0:
-                        return (r, c)
+        for (r, c) in self.board.valid_cells:
+            if self.board.grid[r][c] == 0:
+                self.board.grid[r][c] = PLAYER_X
+                lines = self.board.count_lines_for(PLAYER_X)
+                self.board.grid[r][c] = 0
+                if lines > 0:
+                    return (r, c)
         return None
 
     def _center_or_corner(self) -> tuple[int, int] | None:
-        if self.board.size >= 3:
-            mid = self.board.size // 2
-            if self.board.grid[mid][mid] == 0:
-                return (mid, mid)
-        corners = [(0, 0), (0, self.board.size - 1), (self.board.size - 1, 0), (self.board.size - 1, self.board.size - 1)]
-        random.shuffle(corners)
-        for r, c in corners:
-            if self.board.grid[r][c] == 0:
-                return (r, c)
-        return None
+        empties = [pos for pos in self.board.valid_cells if self.board.grid[pos[0]][pos[1]] == 0]
+        if not empties:
+            return None
+        # Prefer the cell closest to the centroid of the playable area
+        cells = list(self.board.valid_cells)
+        cx = sum(c for _, c in cells) / len(cells)
+        cy = sum(r for r, _ in cells) / len(cells)
+        empties.sort(key=lambda p: (p[0] - cy) ** 2 + (p[1] - cx) ** 2)
+        return empties[0]
 
     def _random(self) -> tuple[int, int] | None:
         empty = self.board.get_empty_cells()

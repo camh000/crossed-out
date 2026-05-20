@@ -122,3 +122,65 @@ class TestLoadProgression:
         save_progression(won=True, tokens_earned=1, levels_reached=1, cards_unlocked=["Point Multiplier"])
         data = get_unlocked_cards()
         assert "Point Multiplier" in data
+
+
+class TestCorruptedSave:
+    def setup_method(self):
+        if os.path.exists(json_path):
+            os.remove(json_path)
+
+    def test_corrupted_json_returns_empty_dict(self):
+        """A malformed save file should not crash the game — degrade to {}."""
+        from save.savesetup import load_progression
+        with open(json_path, "w") as f:
+            f.write("{not valid json at all,,,")
+        assert load_progression() == {}
+
+    def test_truncated_json_returns_empty_dict(self):
+        from save.savesetup import load_progression
+        with open(json_path, "w") as f:
+            f.write('{"won_run": true,')
+        assert load_progression() == {}
+
+    def test_empty_file_returns_empty_dict(self):
+        from save.savesetup import load_progression
+        open(json_path, "w").close()  # empty
+        assert load_progression() == {}
+
+    def test_corrupted_save_can_be_overwritten(self):
+        """After a corrupted load, the next save_progression call should produce a clean file."""
+        from save.savesetup import save_progression, load_progression
+        with open(json_path, "w") as f:
+            f.write("garbage")
+        save_progression(won=True, tokens_earned=3, levels_reached=1, cards_unlocked=[])
+        data = load_progression()
+        assert data["won_run"] is True
+        assert data["tokens_banked"] == 3
+
+
+class TestSavePathResolution:
+    def test_save_path_is_absolute(self):
+        """SAVE_PATH should be an absolute path so the save survives a cwd change."""
+        from save.savesetup import SAVE_PATH
+        assert os.path.isabs(SAVE_PATH)
+
+    def test_save_path_in_project_root(self):
+        """SAVE_PATH should live alongside main.py, not inside save/."""
+        from save.savesetup import SAVE_PATH
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        assert os.path.dirname(SAVE_PATH) == project_root
+
+    def test_save_works_from_different_cwd(self, tmp_path, monkeypatch):
+        """Changing cwd should not change where the save file lives."""
+        from save.savesetup import save_progression, SAVE_PATH
+        # Clean state
+        if os.path.exists(SAVE_PATH):
+            os.remove(SAVE_PATH)
+        monkeypatch.chdir(tmp_path)
+        save_progression(won=False, tokens_earned=0, levels_reached=1, cards_unlocked=[])
+        # Save should appear at SAVE_PATH, not in tmp_path
+        assert os.path.exists(SAVE_PATH)
+        assert not (tmp_path / "crossed_out_save.json").exists()
+        # cleanup
+        if os.path.exists(SAVE_PATH):
+            os.remove(SAVE_PATH)

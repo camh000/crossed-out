@@ -41,6 +41,31 @@ class GameEngine:
         pygame.display.set_caption("CROSSED OUT")
         self.screen = pygame.display.set_mode((SCREEN_W, SCREEN_H))
         self.clock = pygame.time.Clock()
+        # pygame-ce on pygbag/WASM does a fresh font-file lookup on
+        # every pygame.font.SysFont call — and we make dozens per
+        # frame. Without caching, the transition + shop screens (which
+        # render multiple cards each with cost / name / desc fonts)
+        # spike frame time so badly that taps lag for 100+ ms.  Cache
+        # font instances globally so each (family, size, bold) combo
+        # is only created once.
+        if not getattr(pygame.font, "_cx_cache_installed", False):
+            _real_sysfont = pygame.font.SysFont
+            _font_cache: dict = {}
+
+            def _cached_sysfont(name, size, bold=False, italic=False):
+                key = (name, int(size), bool(bold), bool(italic))
+                f = _font_cache.get(key)
+                if f is None:
+                    f = _real_sysfont(name, size, bold, italic)
+                    _font_cache[key] = f
+                return f
+
+            try:
+                pygame.font.SysFont = _cached_sysfont
+                pygame.font._cx_cache_installed = True
+            except Exception:
+                pass  # MagicMock-stubbed font module in tests — no-op.
+
         self.font = pygame.font.SysFont("sans-serif", 20)
         self.big_font = pygame.font.SysFont("consolas", 56)
 

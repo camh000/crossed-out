@@ -245,10 +245,12 @@ class TestDrawGrowsGrid:
         pl.player.score = 0
         pl.current_target = 999
         pl.draw_multiplier = 1.0
-        before = len(engine.board.valid_cells)
         result = engine.evaluate_and_settle()
         assert result == "draw"
-        assert len(engine.board.valid_cells) == before + 1
+        # Board grew by a full new row and a full new column → 3x3 becomes 4x4.
+        assert engine.board.rows == 4
+        assert engine.board.cols == 4
+        assert len(engine.board.valid_cells) == 16
         assert engine.board.game_over is False
         assert engine.showing_result is False
         assert pl.draw_multiplier == 0.9

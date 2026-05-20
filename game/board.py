@@ -156,52 +156,46 @@ class Board:
             elif self.grid[r][c] == OPPONENT_O:
                 self.grid[r][c] = PLAYER_X
 
-    def add_random_adjacent_cell(self) -> Optional[tuple[int, int]]:
-        """Add a random empty cell orthogonally adjacent to the playable area.
+    def grow_row_and_column(self) -> tuple[int, int]:
+        """Add one new row and one new column on independently-chosen random
+        sides (top/bottom for the row, left/right for the column).
 
-        Grows the underlying grid (and shifts existing coordinates) if the
-        new cell falls outside the current bounding box. Returns the new
-        cell's position after any coordinate shift, or None if no candidates.
+        Returns (row_shift, col_shift) — 1 if the corresponding axis grew at
+        the top/left (which shifts every existing coordinate by that
+        amount), 0 if it grew at the bottom/right. Callers holding board
+        coordinates outside the Board (e.g. `player.cells_played`) should
+        apply the same shift.
         """
-        candidates: set[tuple[int, int]] = set()
-        for (r, c) in self.valid_cells:
-            for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                nb = (r + dr, c + dc)
-                if nb not in self.valid_cells:
-                    candidates.add(nb)
-        if not candidates:
-            return None
-        target = random.choice(sorted(candidates))
-        return self._absorb(target)
+        add_top = random.choice((True, False))
+        add_left = random.choice((True, False))
+        row_shift = 1 if add_top else 0
+        col_shift = 1 if add_left else 0
 
-    def _absorb(self, pos: tuple[int, int]) -> tuple[int, int]:
-        r, c = pos
-        row_shift = 0
-        col_shift = 0
-        # extend top
-        while r < 0:
-            self.grid.insert(0, [EMPTY] * self.cols)
-            r += 1
-            row_shift += 1
-        # extend bottom
-        while r >= self.rows:
-            self.grid.append([EMPTY] * self.cols)
-        # extend left
-        while c < 0:
+        # Grow columns first so the new row's width matches the new col count.
+        if add_left:
             for row in self.grid:
                 row.insert(0, EMPTY)
-            c += 1
-            col_shift += 1
-        # extend right
-        while c >= self.cols:
+        else:
             for row in self.grid:
                 row.append(EMPTY)
 
-        if row_shift or col_shift:
-            self.valid_cells = {(rr + row_shift, cc + col_shift) for (rr, cc) in self.valid_cells}
-            self.wall_cells = [(rr + row_shift, cc + col_shift) for (rr, cc) in self.wall_cells]
-            self.poison_cells = [(rr + row_shift, cc + col_shift) for (rr, cc) in self.poison_cells]
-            self.locked_cells = [(rr + row_shift, cc + col_shift) for (rr, cc) in self.locked_cells]
+        new_width = self.cols
+        if add_top:
+            self.grid.insert(0, [EMPTY] * new_width)
+        else:
+            self.grid.append([EMPTY] * new_width)
 
-        self.valid_cells.add((r, c))
-        return (r, c)
+        if row_shift or col_shift:
+            self.valid_cells = {(r + row_shift, c + col_shift) for (r, c) in self.valid_cells}
+            self.wall_cells = [(r + row_shift, c + col_shift) for (r, c) in self.wall_cells]
+            self.poison_cells = [(r + row_shift, c + col_shift) for (r, c) in self.poison_cells]
+            self.locked_cells = [(r + row_shift, c + col_shift) for (r, c) in self.locked_cells]
+
+        new_row_idx = 0 if add_top else self.rows - 1
+        new_col_idx = 0 if add_left else self.cols - 1
+        for c in range(self.cols):
+            self.valid_cells.add((new_row_idx, c))
+        for r in range(self.rows):
+            self.valid_cells.add((r, new_col_idx))
+
+        return (row_shift, col_shift)

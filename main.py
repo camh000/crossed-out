@@ -152,18 +152,23 @@ class GameEngine:
                 result = "lose"
 
         if result == "draw":
-            # Grid grows by one adjacent cell and play continues. Each draw
-            # within the same game compounds a 10% penalty on the eventual
-            # win reward; a win or loss resets it.
+            # Grid grows by a full new row and a full new column on random
+            # sides, giving both players room to manoeuvre on the next turns.
+            # Each draw compounds a 10% penalty on the eventual win reward;
+            # a win or loss resets it.
             pl.draw_multiplier *= 0.9
-            added = self.board.add_random_adjacent_cell()
+            row_shift, col_shift = self.board.grow_row_and_column()
+            if row_shift or col_shift:
+                pl.player.cells_played = [
+                    (r + row_shift, c + col_shift) for (r, c) in pl.player.cells_played
+                ]
             self.board.game_over = False
             self.showing_result = False
             self.player_placed_this_turn = False
             self.card_played_this_turn = False
             pl.game_result = "draw"
             self.draw_message_until = pygame.time.get_ticks() + 1500
-            self.draw_message_cell = added
+            self.draw_message_cell = None
             return result
 
         if result == "win":

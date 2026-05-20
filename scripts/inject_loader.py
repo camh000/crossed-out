@@ -30,6 +30,16 @@ CSS = """\
 #transfer { display: none !important; }
 #infobox { display: none !important; }
 body { background: #07070f !important; }
+/* Kill mobile Safari's 300 ms tap-delay everywhere. Without this, every
+   button (Tap-to-begin, Reroll, Continue, menu buttons, even cell
+   placements) feels sluggish because the browser waits to see if the
+   tap will become a double-tap-to-zoom. `manipulation` disables that
+   heuristic; `-webkit-tap-highlight-color: transparent` suppresses the
+   grey flash overlay on tap. */
+html, body, canvas, #cx-loader, #cx-loader * {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
 #cx-loader {
   position: fixed;
   inset: 0;

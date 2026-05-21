@@ -1560,8 +1560,75 @@ class TestNewBosses:
     def test_all_new_bosses_registered(self, mock_caption, mock_mode, mock_init):
         from config.bosses import BOSS_MAP
         for key in ("tide", "echo", "spotlight", "inverse", "taxman",
-                    "vandal", "twins", "hourglass", "quicksand", "hivemind"):
+                    "vandal", "twins", "hourglass", "quicksand", "hivemind",
+                    "cartographer", "two_headed", "architect",
+                    "plague_doctor", "hot_potato"):
             assert key in BOSS_MAP, f"{key} boss missing"
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_plague_doctor_halves_ink(self, mock_caption, mock_mode, mock_init):
+        from systems.cardsystem import CardSystem
+        from game.board import Board, PLAYER_X
+        from game.player import Player
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        plain_ink, _, _ = cs.score_breakdown(board, player, 1, is_boss=True)
+        plague_ink, _, _ = cs.score_breakdown(
+            board, player, 1, is_boss=True, boss_mechanic="plague_doctor",
+        )
+        assert plague_ink == plain_ink // 2
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_architect_walls_at_game_start(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        # Force a 9x9 board (level 5) so Architect has room.
+        engine.engine.state.level = 5
+        engine.board.reset(9)
+        engine._architect_walls()
+        # Walls land inset 1 from the edges, with gaps at the centre row/col.
+        assert any((r, c) in engine.board.wall_cells for r in (1, 7) for c in range(1, 8))
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_cartographer_swap_preserves_marks(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        engine = GameEngine()
+        engine.board.reset(3)
+        engine.board.place_at(0, 0, PLAYER_X)
+        engine.board.place_at(2, 2, OPPONENT_O)
+        before = sum(1 for r in range(3) for c in range(3) if engine.board.grid[r][c] != 0)
+        import random
+        random.seed(0)
+        engine._cartographer_swap()
+        after = sum(1 for r in range(3) for c in range(3) if engine.board.grid[r][c] != 0)
+        assert after == before  # marks count unchanged; only positions swap
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_hot_potato_rotates_lit_cell(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.board.reset(3)
+        seen = set()
+        import random
+        for seed in range(32):
+            random.seed(seed)
+            engine._hot_potato_rotate()
+            if engine._hot_potato_cell is not None:
+                seen.add(engine._hot_potato_cell)
+        assert len(seen) > 1
 
     @patch('pygame.init')
     @patch('pygame.display.set_mode')

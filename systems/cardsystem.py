@@ -270,6 +270,10 @@ class CardSystem:
             if final_count_stacks > 0:
                 ink *= 2 ** final_count_stacks
 
+        # Plague Doctor boss — halve ink across the board.
+        if is_boss and boss_mechanic == "plague_doctor":
+            ink //= 2
+
         # Multiplicative component.
         mult = 1.0 + max(0, level_mult - 1)
         x_lines_for_diag = [c["cells"] for c in contribs if c["side"] == "X"]

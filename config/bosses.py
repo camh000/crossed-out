@@ -119,6 +119,37 @@ BOSS_LIST: list[BossDef] = [
         "AI plays at 100% tactical strength — blocks every threat, never misplays.",
         "hivemind",
     ),
+    # --- Creative drop ------------------------------------------------------
+    BossDef(
+        "The Cartographer",
+        "The map is alive.",
+        "Every six of your moves, two random marks on the board swap positions. Plan lines that survive the reshuffle.",
+        "cartographer",
+    ),
+    BossDef(
+        "Two-Headed",
+        "Two opponents.",
+        "Two AI minds take O's against you. Each of your moves is answered by two O placements.",
+        "two_headed",
+    ),
+    BossDef(
+        "The Architect",
+        "Walls everywhere.",
+        "Game starts with a spiral maze of walls inset from the edges. Play down the middle.",
+        "architect",
+    ),
+    BossDef(
+        "Plague Doctor",
+        "Every line is sickly.",
+        "All cells are infected (green). Every X line you score this round counts for HALF ink. Stack heavy buffs to compensate.",
+        "plague_doctor",
+    ),
+    BossDef(
+        "Hot Potato",
+        "Don't touch the lit cell.",
+        "One random cell pulses red each turn. Placing on it costs 5 ink. The lit cell rotates after every move.",
+        "hot_potato",
+    ),
 ]
 
 

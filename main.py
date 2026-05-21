@@ -114,6 +114,8 @@ class GameEngine:
         # Per-boss scratch state. Reset in start_game.
         self._spotlight_anchor: tuple[int, int] | None = None
         self._tide_clear_deadlines: list[tuple[int, list[tuple[int, int]]]] = []
+        # Hot Potato: the currently-lit cell. Rotates each player move.
+        self._hot_potato_cell: tuple[int, int] | None = None
 
         # Joker inspect modal — when set to a card name, draw() paints a
         # large card view over everything. In the shop state the modal
@@ -208,6 +210,12 @@ class GameEngine:
             # Reset Tide schedule + Hourglass counter on every boss start.
             self._tide_clear_deadlines = []
             pl.player.upgrades.pop("hourglass_counter", None)
+            pl.player.upgrades.pop("carto_moves", None)
+            self._hot_potato_cell = None
+            if boss.mechanic == "hot_potato":
+                self._hot_potato_rotate()
+            if boss.mechanic == "architect":
+                self._architect_walls()
 
             pl.is_boss = True
             self.state = "boss_intro"
@@ -329,7 +337,7 @@ class GameEngine:
         # AI's tactical depth via fade_age=None even on Blind.
         extras = 0
         if pl.is_boss and pl.current_boss:
-            if pl.current_boss.mechanic in ("echo", "twins"):
+            if pl.current_boss.mechanic in ("echo", "twins", "two_headed"):
                 extras = 1
         for i in range(1 + extras):
             ai = OpponentAI(self.board, fade_age=self._ai_fade_age())
@@ -392,6 +400,59 @@ class GameEngine:
         rows = [r for (r, _) in self.board.valid_cells]
         cols = [c for (_, c) in self.board.valid_cells]
         return ((min(rows) + max(rows)) // 2, (min(cols) + max(cols)) // 2)
+
+    def _cartographer_swap(self) -> None:
+        """Cartographer boss — swap two random non-empty, non-wall cells.
+        Stamps move with the marks so age-fade (Blind) still works."""
+        non_empty = [
+            (r, c) for (r, c) in self.board.valid_cells
+            if self.board.grid[r][c] != EMPTY
+            and (r, c) not in self.board.wall_cells
+        ]
+        if len(non_empty) < 2:
+            return
+        a, b = random.sample(non_empty, 2)
+        ar, ac = a
+        br, bc = b
+        self.board.grid[ar][ac], self.board.grid[br][bc] = (
+            self.board.grid[br][bc], self.board.grid[ar][ac],
+        )
+        self.board.placed_at[ar][ac], self.board.placed_at[br][bc] = (
+            self.board.placed_at[br][bc], self.board.placed_at[ar][ac],
+        )
+
+    def _hot_potato_rotate(self) -> None:
+        """Hot Potato boss — pick a new random empty cell to be the lit
+        one. If no empties remain, clear the lit cell."""
+        empty = [
+            p for p in self.board.get_empty_cells()
+            if p not in self.board.wall_cells
+        ]
+        self._hot_potato_cell = random.choice(empty) if empty else None
+
+    def _architect_walls(self) -> None:
+        """Architect boss — place a 1-cell spiral wall pattern inset 1
+        from the edges. Cheap, dramatic, forces middle play."""
+        rows = [r for (r, _) in self.board.valid_cells]
+        cols = [c for (_, c) in self.board.valid_cells]
+        rmin, rmax = min(rows), max(rows)
+        cmin, cmax = min(cols), max(cols)
+        # Single inset ring of walls — top row, bottom row, left+right
+        # columns at inset 1, leaving a hole at the centre of each side.
+        if rmax - rmin < 4 or cmax - cmin < 4:
+            return  # too small for a maze
+        ir1, ir2 = rmin + 1, rmax - 1
+        ic1, ic2 = cmin + 1, cmax - 1
+        gap_r = (rmin + rmax) // 2
+        gap_c = (cmin + cmax) // 2
+        for c in range(ic1, ic2 + 1):
+            if c != gap_c:
+                self.board.wall_cells.append((ir1, c))
+                self.board.wall_cells.append((ir2, c))
+        for r in range(ir1 + 1, ir2):
+            if r != gap_r:
+                self.board.wall_cells.append((r, ic1))
+                self.board.wall_cells.append((r, ic2))
 
     def _vandal_strike(self) -> None:
         """Vandal boss helper — erase one random non-edge X cell."""
@@ -827,6 +888,27 @@ class GameEngine:
                 ):
                     ps = avail // 5
                     pygame.draw.rect(surf, (80, 180, 60), (x + avail // 2 - ps // 2, y + avail // 2 - ps // 2, ps, ps), border_radius=3)
+
+                # Plague Doctor — soft green tint over every cell, so
+                # the boss feels sickly even without per-cell mechanics.
+                if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "plague_doctor":
+                    try:
+                        tint = pygame.Surface((avail, avail), pygame.SRCALPHA)
+                        tint.fill((60, 160, 50, 36))
+                        surf.blit(tint, (x, y))
+                    except Exception:
+                        pass
+
+                # Hot Potato — red pulse over the lit cell.
+                if (
+                    pl.is_boss and pl.current_boss
+                    and pl.current_boss.mechanic == "hot_potato"
+                    and self._hot_potato_cell == (r, c)
+                ):
+                    import math as _math
+                    pulse = (1 + _math.sin(pygame.time.get_ticks() / 220.0)) / 2
+                    width = 3 + int(pulse * 3)
+                    pygame.draw.rect(surf, (255, 80, 80), (x, y, avail, avail), width, border_radius=4)
 
                 val = self.board.grid[r][c]
                 # Blind boss: marks fade behind a "?" once they've been
@@ -1469,6 +1551,10 @@ class GameEngine:
                 placed = self.board.place_at(row, col, PLAYER_X)
                 if placed:
                     pl.player.cells_played.append((row, col))
+                    # Track "most-recently placed X" for the Last Word
+                    # glyph and other "most-recent" effects. Per-game
+                    # scratch — cleared in start_game.
+                    pl.player.last_x_cell = (row, col)
 
                     # Boss side-effects that follow the player's move
                     # directly. Poison TICK happens later, after the AI
@@ -1487,6 +1573,20 @@ class GameEngine:
                         if bm == "spotlight":
                             # Roving zone re-anchors each player move.
                             self._spotlight_move()
+                        if bm == "cartographer":
+                            # Every 6 of the player's moves, swap two random
+                            # non-empty cells.
+                            n = pl.player.upgrades.get("carto_moves", 0) + 1
+                            pl.player.upgrades["carto_moves"] = n
+                            if n % 6 == 0:
+                                self._cartographer_swap()
+                        if bm == "hot_potato":
+                            # If the player landed on the lit cell, eat a
+                            # 5-token penalty (and bump score downward).
+                            if self._hot_potato_cell == (row, col):
+                                pl.player.tokens = max(0, pl.player.tokens - 5)
+                            # Rotate the lit cell.
+                            self._hot_potato_rotate()
 
                     # Fire on_x_placed jokers (Ricochet, Overload). Any
                     # triggered placements bump move_count and stamp

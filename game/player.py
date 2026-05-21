@@ -25,6 +25,13 @@ class Player:
     # Marks placed by the Blind Shot joker this game. A completed X line
     # containing any of these gets double ink.
     blind_shot_marks: list[tuple[int, int]] = field(default_factory=list)
+    # Plague Doctor boss — set of cells you've placed an X on for the
+    # FIRST time this game. Lines that contain any of these cells score
+    # 0 ink. Cleared in start_game on Plague Doctor games.
+    first_placed_cells: set[tuple[int, int]] = field(default_factory=set)
+    # Last cell you placed an X on (the player's most-recent move).
+    # Read by the Last Word glyph and similar "most-recent" effects.
+    last_x_cell: tuple[int, int] | None = None
 
 
 @dataclass

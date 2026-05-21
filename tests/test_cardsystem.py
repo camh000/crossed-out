@@ -372,6 +372,129 @@ class TestXPlacedTriggers:
         assert player.upgrades["overload_charges"] == 3
 
 
+class TestXPlacedTriggersExtended:
+    """Direct behaviour pins for the more complex on_x_placed handlers
+    (Magnet, Stutter, Cascade). These were previously covered only
+    transitively via fire_x_placed dispatch tests, leaving the bodies
+    of the handlers untested."""
+
+    # --- Magnet ---------------------------------------------------------
+
+    def test_magnet_pulls_nearest_o_one_cell(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Magnet"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        # Player places X at (4, 4); nearest O is at (4, 0). The pull
+        # steps the O one cell closer along the row.
+        board.grid[4][0] = OPPONENT_O
+        board.place_at(4, 4, PLAYER_X)
+        cs.fire_x_placed(board, player, 4, 4)
+        assert board.grid[4][0] == EMPTY
+        assert board.grid[4][1] == OPPONENT_O
+
+    def test_magnet_two_copies_pulls_two_os(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Magnet", "Magnet"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        board.grid[0][0] = OPPONENT_O
+        board.grid[4][0] = OPPONENT_O
+        board.place_at(2, 2, PLAYER_X)
+        cs.fire_x_placed(board, player, 2, 2)
+        # Both Os should have moved (off their start cells).
+        moved_a = board.grid[0][0] == EMPTY
+        moved_b = board.grid[4][0] == EMPTY
+        assert moved_a and moved_b
+
+    def test_magnet_no_op_when_no_os(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Magnet"])
+        cs.apply_passive_buffs(player)
+        board = Board()
+        board.place_at(0, 0, PLAYER_X)
+        # No Os to pull — handler bails cleanly.
+        cs.fire_x_placed(board, player, 0, 0)
+        # Board is unchanged except for the placed X.
+        for r in range(3):
+            for c in range(3):
+                if (r, c) == (0, 0):
+                    assert board.grid[r][c] == PLAYER_X
+                else:
+                    assert board.grid[r][c] == EMPTY
+
+    def test_magnet_skips_blocked_targets(self):
+        """If the step-toward cell is already occupied, the O stays
+        put rather than overlapping."""
+        cs = CardSystem()
+        player = Player(passive_cards=["Magnet"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        board.grid[0][0] = OPPONENT_O
+        board.grid[1][0] = PLAYER_X  # blocks the step
+        board.grid[0][1] = PLAYER_X  # blocks the step
+        board.place_at(2, 2, PLAYER_X)
+        cs.fire_x_placed(board, player, 2, 2)
+        # The O at (0,0) has nowhere clean to move — should stay.
+        assert board.grid[0][0] == OPPONENT_O
+
+    # --- Stutter --------------------------------------------------------
+
+    def test_stutter_mirrors_every_third_x(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Stutter"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        # Three player X placements — only the 3rd triggers the mirror.
+        for i, (r, c) in enumerate([(0, 0), (1, 0), (0, 1)]):
+            board.place_at(r, c, PLAYER_X)
+            cs.fire_x_placed(board, player, r, c)
+        # 3rd placement was at (0, 1) on a 5x5 → mirror cell (4, 3).
+        assert board.grid[4][3] == PLAYER_X
+
+    def test_stutter_no_mirror_on_first_two(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Stutter"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        board.place_at(0, 0, PLAYER_X)
+        cs.fire_x_placed(board, player, 0, 0)
+        board.place_at(0, 1, PLAYER_X)
+        cs.fire_x_placed(board, player, 0, 1)
+        # The mirror cells (4,4) and (4,3) stay empty after 2 placements.
+        assert board.grid[4][4] == EMPTY
+        assert board.grid[4][3] == EMPTY
+
+    # --- Cascade --------------------------------------------------------
+
+    def test_cascade_extends_collinear_run(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Cascade"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        # Two existing X's at (0, 0) and (0, 1); place a third at (0, 2).
+        # Cascade detects the run-of-3 and spawns an extra X at (0, 3).
+        board.grid[0][0] = PLAYER_X
+        board.grid[0][1] = PLAYER_X
+        board.place_at(0, 2, PLAYER_X)
+        cs.fire_x_placed(board, player, 0, 2)
+        assert board.grid[0][3] == PLAYER_X
+
+    def test_cascade_does_nothing_for_lone_placement(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Cascade"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        board.place_at(2, 2, PLAYER_X)
+        cs.fire_x_placed(board, player, 2, 2)
+        # No adjacent X's → no extension placed.
+        xs = sum(
+            1 for r in range(5) for c in range(5)
+            if board.grid[r][c] == PLAYER_X
+        )
+        assert xs == 1
+
+
 # ----------------------------------------------------------------------
 # on_line_completed triggers
 # ----------------------------------------------------------------------

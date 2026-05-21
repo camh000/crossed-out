@@ -196,7 +196,8 @@ class TestEvaluateSettle:
         pl.player.score = 1
         pl.score_this_level = 0
         pl.current_target = 1
-        engine.engine.card_system.calculate_score = MagicMock(return_value=6)
+        # card_system lives on the GameEngine, not on RogueliteEngine.
+        engine.card_system.calculate_score = MagicMock(return_value=6)
         result = engine._boss_outcome()
         assert result in ("win", "lose", "draw")
 

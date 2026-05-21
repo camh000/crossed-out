@@ -74,3 +74,17 @@ def save_progression(
 def get_unlocked_cards() -> list[str]:
     """Return the list of currently unlocked cards."""
     return load_progression().get("cards_unlocked", [])
+
+
+def is_intro_seen() -> bool:
+    """True iff the first-run tutorial overlay has already been
+    completed or skipped on this save."""
+    return bool(load_progression().get("intro_seen", False))
+
+
+def mark_intro_seen() -> None:
+    """Flip the persisted `intro_seen` flag so the first-run intro
+    doesn't fire again. Preserves every other field of the save."""
+    data = load_progression()
+    data["intro_seen"] = True
+    _write(data)

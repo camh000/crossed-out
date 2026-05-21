@@ -33,10 +33,26 @@ class TestMainEngineRun:
     def test_new_run(self, mock_caption, mock_mode, mock_init):
         from main import GameEngine
         engine = GameEngine()
-        with patch('main.get_unlocked_cards', return_value=[]):
+        # Skip the first-run intro by claiming it's already been seen.
+        with patch('main.get_unlocked_cards', return_value=[]), \
+             patch('main.is_intro_seen', return_value=True):
             engine.new_run()
         assert engine.state == "transition"
         assert len(engine.starter_cards) == 3
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_new_run_first_ever_routes_to_intro(self, mock_caption, mock_mode, mock_init):
+        """First-ever run shows the tutorial overlay instead of going
+        straight to the starter-glyph picker."""
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]), \
+             patch('main.is_intro_seen', return_value=False):
+            engine.new_run()
+        assert engine.state == "intro"
+        assert engine._intro_step == 0
 
     @patch('pygame.init')
     @patch('pygame.display.set_mode')
@@ -46,7 +62,8 @@ class TestMainEngineRun:
         one before the first game starts."""
         from main import GameEngine
         engine = GameEngine()
-        with patch('main.get_unlocked_cards', return_value=[]):
+        with patch('main.get_unlocked_cards', return_value=[]), \
+             patch('main.is_intro_seen', return_value=True):
             engine.new_run()
         assert engine.engine.state.player.passive_cards == []
 
@@ -1442,6 +1459,75 @@ class TestCodex:
         engine._inspecting_boss = None
         engine._inspecting_joker = "Point Multiplier"
         assert engine._inspecting_joker == "Point Multiplier"
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_codex_has_rules_tab(self, mock_caption, mock_mode, mock_init):
+        """Third tab (RULES) renders no chips but is a valid tab."""
+        from main import GameEngine
+        engine = GameEngine()
+        engine.state = "codex"
+        engine._codex_tab = "rules"
+        layout = engine._codex_layout()
+        assert "tab_rules" in layout
+        # RULES tab has no chips — it's a static info panel.
+        assert layout["chips"] == []
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_open_help_pushes_into_codex_rules(self, mock_caption, mock_mode, mock_init):
+        """The in-game '?' icon routes into the codex RULES tab with a
+        return-state pointer so BACK comes back to the game."""
+        from main import GameEngine
+        engine = GameEngine()
+        engine.state = "game"
+        engine._open_help()
+        assert engine.state == "codex"
+        assert engine._codex_tab == "rules"
+        assert engine._codex_return_state == "game"
+
+
+class TestIntroOverlay:
+    """First-run tutorial overlay — 3 steps, dismissable with SKIP, and
+    persists intro_seen so it doesn't fire on subsequent runs."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_intro_layout_has_three_buttons(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        layout = engine._intro_layout()
+        assert "back" in layout and "next" in layout and "skip" in layout
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_intro_has_three_steps(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        steps = engine._intro_steps()
+        assert len(steps) == 3
+        # Each step is (heading, body) — both non-empty strings.
+        for heading, body in steps:
+            assert heading and isinstance(heading, str)
+            assert body and isinstance(body, str)
+
+
+class TestRoundLabel:
+    """The top-bar 'Round N / 7' label replaces the old 'Level N' so
+    the player can see how long the run is."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_max_base_level_default(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        # The intro copy and the round label both reference this value.
+        assert engine.engine.state.max_base_level == 7
 
 
 class TestBlindAI:

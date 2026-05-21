@@ -5,7 +5,10 @@ json_path = os.path.join(os.path.dirname(__file__), '..', 'crossed_out_save.json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import pytest
-from save.savesetup import save_progression, load_progression, get_unlocked_cards
+from save.savesetup import (
+    save_progression, load_progression, get_unlocked_cards,
+    is_intro_seen, mark_intro_seen,
+)
 
 
 class TestSaveProgression:
@@ -156,6 +159,28 @@ class TestCorruptedSave:
         data = load_progression()
         assert data["won_run"] is True
         assert data["tokens_banked"] == 3
+
+
+class TestIntroSeenFlag:
+    def setup_method(self):
+        if os.path.exists(json_path):
+            os.remove(json_path)
+
+    def test_default_intro_unseen(self):
+        assert is_intro_seen() is False
+
+    def test_mark_intro_seen_persists(self):
+        mark_intro_seen()
+        assert is_intro_seen() is True
+
+    def test_mark_intro_seen_preserves_other_fields(self):
+        save_progression(won=True, tokens_earned=5, levels_reached=3, cards_unlocked=[])
+        mark_intro_seen()
+        data = load_progression()
+        assert data["intro_seen"] is True
+        assert data["won_run"] is True
+        assert data["tokens_banked"] == 5
+        assert data["levels_reached"] == 3
 
 
 class TestSavePathResolution:

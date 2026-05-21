@@ -6,7 +6,9 @@ from game.opponent import OpponentAI
 from systems.animator import Animator
 from systems.cardsystem import CardSystem
 from systems.roguelite import RogueliteEngine
-from save.savesetup import save_progression, get_unlocked_cards
+from save.savesetup import (
+    save_progression, get_unlocked_cards, is_intro_seen, mark_intro_seen,
+)
 from config.constants import (
     SCREEN_W, SCREEN_H, BG_COLOR, TEXT_COLOR, TEXT_SUB,
     ACCENT_GOLD, ACCENT_GREEN, ACCENT_RED, COLOR_X, COLOR_O,
@@ -124,8 +126,15 @@ class GameEngine:
         # Boss inspect target — set when the codex's bosses tab is tapped.
         # Mutually exclusive with _inspecting_joker.
         self._inspecting_boss: str | None = None
-        # Codex tab — "glyphs" or "bosses".
+        # Codex tab — "glyphs", "bosses", or "rules".
         self._codex_tab: str = "glyphs"
+        # When the player opens the codex via the in-game "?" icon, we
+        # stash the state to return to once the BACK button is tapped.
+        # None means BACK returns to the menu (the codex's normal home).
+        self._codex_return_state: str | None = None
+        # First-run intro overlay: zero-indexed step number while in
+        # the "intro" state.
+        self._intro_step: int = 0
 
     def new_run(self):
         self.engine.start_new_run()
@@ -135,7 +144,14 @@ class GameEngine:
         # Starter joker pool — 3 random offers; the click handler in the
         # transition state picks one to seed passive_cards.
         self.starter_cards = pick_random(3)
-        self.state = "transition"
+        # First-ever run gets the tutorial intro overlay. Once the
+        # player skips or finishes it, intro_seen is persisted so
+        # future runs go straight to the starter-glyph picker.
+        if not is_intro_seen():
+            self._intro_step = 0
+            self.state = "intro"
+        else:
+            self.state = "transition"
 
     def start_game(self):
         pl = self.engine.state
@@ -791,6 +807,9 @@ class GameEngine:
         elif self.state == "codex":
             self._draw_codex(surf)
 
+        elif self.state == "intro":
+            self._draw_intro(surf)
+
         elif self.state == "transition":
             lv = pl.level
             gs = pl.get_grid_size()
@@ -1087,8 +1106,19 @@ class GameEngine:
             # score display
             draw_score(surf, pl.player.score, pl.current_target, 20, 30)
             draw_tokens(surf, pl.player.tokens, SCREEN_W - 200, 30)
-            lv_txt = self.font.render(f"Level {pl.level}", True, TEXT_COLOR)
+            # Round counter — "Round N / 7" during the base run; in
+            # endless mode we drop the denominator since there's no
+            # finish line.
+            if pl.endless_mode or pl.level > pl.max_base_level:
+                round_label = f"Round {pl.level} — endless"
+            else:
+                round_label = f"Round {pl.level} / {pl.max_base_level}"
+            lv_txt = self.font.render(round_label, True, TEXT_COLOR)
             surf.blit(lv_txt, (20, 10))
+            # In-game help — small "?" chip in the top-right that opens
+            # the codex on the RULES tab. _help_button_rect() is the
+            # single source of truth for both the draw and click test.
+            self._draw_help_icon(surf)
             # Lives — text + pip row in the centre of the top bar. Unicode
             # heart glyphs render inconsistently in the browser, so use a
             # plain "Lives: N" label with filled circles for clarity.
@@ -1143,7 +1173,8 @@ class GameEngine:
                 if pl.ante_target > 0:
                     ante_color = ACCENT_GREEN if pl.score_this_game >= pl.ante_target else ACCENT_RED
                     ante_txt = self.font.render(
-                        f"Ante: {pl.score_this_game} / {pl.ante_target}", True, ante_color,
+                        f"Boss Ante: {pl.score_this_game} / {pl.ante_target}",
+                        True, ante_color,
                     )
                     surf.blit(ante_txt, (SCREEN_W - 10 - ante_txt.get_width(), 85))
 
@@ -1447,7 +1478,17 @@ class GameEngine:
         elif self.state == "codex":
             layout = self._codex_layout()
             if layout["back"].collidepoint(mx, my):
-                self.state = "menu"
+                # BACK routes wherever the codex was opened from. The
+                # in-game "?" icon sets _codex_return_state so we slip
+                # back into the game; the menu path leaves it None.
+                if self._codex_return_state is not None:
+                    self.state = self._codex_return_state
+                    self._codex_return_state = None
+                else:
+                    self.state = "menu"
+                return
+            if layout["tab_rules"].collidepoint(mx, my):
+                self._codex_tab = "rules"
                 return
             if layout["tab_glyphs"].collidepoint(mx, my):
                 self._codex_tab = "glyphs"
@@ -1462,6 +1503,24 @@ class GameEngine:
                     else:
                         self._inspecting_boss = name
                     return
+
+        elif self.state == "intro":
+            layout = self._intro_layout()
+            steps = self._intro_steps()
+            if layout["skip"].collidepoint(mx, my):
+                mark_intro_seen()
+                self.state = "transition"
+                return
+            if layout["back"].collidepoint(mx, my) and self._intro_step > 0:
+                self._intro_step -= 1
+                return
+            if layout["next"].collidepoint(mx, my):
+                if self._intro_step >= len(steps) - 1:
+                    mark_intro_seen()
+                    self.state = "transition"
+                else:
+                    self._intro_step += 1
+                return
 
         elif self.state == "transition":
             card_y = 460
@@ -1521,6 +1580,13 @@ class GameEngine:
             return
 
         elif self.state == "game":
+            # In-game "?" help icon takes precedence over board clicks
+            # so a tap on the chip can't accidentally place an X. We
+            # bounds-check by raw arithmetic so the test harness's
+            # MagicMock'd pygame.Rect doesn't always "collide".
+            if self._in_help_rect(mx, my):
+                self._open_help()
+                return
             # If we're displaying a result overlay: the first click while
             # the staged reveal is still playing snaps to the end frame
             # (player wants to skip ahead). The next click advances
@@ -1863,17 +1929,24 @@ class GameEngine:
     def _codex_layout(self) -> dict:
         """Single source of truth for the codex screen's hit rects.
         Returns: header rects (tab buttons + back), and per-entry chip
-        rects for whichever tab is active."""
+        rects for whichever tab is active. The RULES tab has no chips."""
         chip_w, chip_h = 92, 90
         chip_gap = 10
         cols = 6
         top_y = 200  # below the tab strip
+        tab_w = 130
+        gap = 8
+        total_tabs_w = 3 * tab_w + 2 * gap
+        tabs_start = (SCREEN_W - total_tabs_w) // 2
         layout: dict = {
             "back": pygame.Rect(20, 20, 100, 44),
-            "tab_glyphs": pygame.Rect(SCREEN_W // 2 - 180, 90, 170, 50),
-            "tab_bosses": pygame.Rect(SCREEN_W // 2 + 10, 90, 170, 50),
+            "tab_rules": pygame.Rect(tabs_start, 90, tab_w, 50),
+            "tab_glyphs": pygame.Rect(tabs_start + tab_w + gap, 90, tab_w, 50),
+            "tab_bosses": pygame.Rect(tabs_start + 2 * (tab_w + gap), 90, tab_w, 50),
             "chips": [],
         }
+        if self._codex_tab == "rules":
+            return layout
         if self._codex_tab == "glyphs":
             entries = [c.name for c in ALL_CARDS]
         else:
@@ -1888,6 +1961,117 @@ class GameEngine:
             y = top_y + row * (chip_h + chip_gap)
             layout["chips"].append((name, pygame.Rect(x, y, chip_w, chip_h)))
         return layout
+
+    # Raw coords for the in-game '?' help icon — kept as a tuple so the
+    # bounds check works under the test harness's MagicMock'd pygame.
+    HELP_RECT = (SCREEN_W - 48, 64, 36, 36)
+
+    def _help_button_rect(self) -> "pygame.Rect":
+        """Single-source rect for the in-game '?' help icon. Sits in
+        the top-right of the canvas just under the tokens display."""
+        x, y, w, h = self.HELP_RECT
+        return pygame.Rect(x, y, w, h)
+
+    def _in_help_rect(self, mx: int, my: int) -> bool:
+        x, y, w, h = self.HELP_RECT
+        return x <= mx <= x + w and y <= my <= y + h
+
+    def _draw_help_icon(self, surf) -> None:
+        """Round '?' button rendered in the top-right of the game state.
+        Tapping it pushes into the codex's RULES tab and routes BACK
+        to the current state."""
+        rect = self._help_button_rect()
+        pygame.draw.circle(surf, (40, 40, 60), rect.center, rect.width // 2)
+        pygame.draw.circle(surf, ACCENT_GOLD, rect.center, rect.width // 2, 2)
+        qf = pygame.font.SysFont("consolas", 22, bold=True).render(
+            "?", True, ACCENT_GOLD,
+        )
+        surf.blit(qf, (rect.centerx - qf.get_width() // 2,
+                       rect.centery - qf.get_height() // 2))
+
+    def _open_help(self) -> None:
+        """Slip into the codex on the RULES tab, remembering which state
+        to return to when BACK is tapped."""
+        self._codex_return_state = self.state
+        self._codex_tab = "rules"
+        self.state = "codex"
+
+    def _intro_steps(self) -> list[tuple[str, str]]:
+        """3-step (heading, body) walkthrough rendered in the intro
+        overlay state. Reads max_base_level from the RunState so the
+        copy stays correct if the run length ever changes."""
+        max_base = self.engine.state.max_base_level
+        return [
+            ("How a round works",
+             f"You're playing tic-tac-toe — but every level the grid grows. "
+             f"Score X lines to hit the LEVEL GOAL and advance.\n\n"
+             f"Survive {max_base} rounds and you win the run."),
+            ("Ink × Mult",
+             "Each completed X line gives ink. Mult grows with the level "
+             "and your glyphs. Total score = ink × mult.\n\n"
+             "Every 3rd game is a BOSS — you must hit the boss ante "
+             "target in ink, or the run ends."),
+            ("Glyphs",
+             "Between games you visit the SHOP. Glyphs are permanent "
+             "buffs — stack them, sell them for 50%, and build a strategy "
+             "around the boss modifiers you'll face."),
+        ]
+
+    def _intro_layout(self) -> dict:
+        btn_w, btn_h = 130, 50
+        bottom_y = SCREEN_H - 100
+        return {
+            "back": pygame.Rect(40, bottom_y, btn_w, btn_h),
+            "next": pygame.Rect(SCREEN_W - btn_w - 40, bottom_y, btn_w, btn_h),
+            "skip": pygame.Rect(SCREEN_W // 2 - btn_w // 2, bottom_y, btn_w, btn_h),
+        }
+
+    def _draw_intro(self, surf) -> None:
+        """First-run tutorial overlay. 3 steps with Back / Skip / Next."""
+        steps = self._intro_steps()
+        step = max(0, min(self._intro_step, len(steps) - 1))
+        heading, body = steps[step]
+
+        draw_big_centered_text(
+            surf, "CROSSED OUT", self.big_font, ACCENT_GOLD, 80,
+        )
+        draw_centered_text(
+            surf, f"Tutorial — {step + 1} / {len(steps)}", self.font, TEXT_SUB, 160,
+        )
+
+        panel = pygame.Rect(40, 220, SCREEN_W - 80, 700)
+        pygame.draw.rect(surf, (16, 16, 28), panel, border_radius=12)
+        pygame.draw.rect(surf, ACCENT_GOLD, panel, 2, border_radius=12)
+
+        from renders.rendering import _wrap_lines
+        h_font = pygame.font.SysFont("sans-serif", 28, bold=True)
+        b_font = pygame.font.SysFont("sans-serif", 22)
+        y = panel.top + 32
+        hs = h_font.render(heading, True, ACCENT_GOLD)
+        surf.blit(hs, (panel.centerx - hs.get_width() // 2, y))
+        y += hs.get_height() + 18
+        max_w = panel.width - 40
+        for para in body.split("\n\n"):
+            for line in _wrap_lines(para, b_font, max_w):
+                ls = b_font.render(line, True, TEXT_COLOR)
+                surf.blit(ls, (panel.left + 20, y))
+                y += ls.get_height() + 4
+            y += 10
+
+        layout = self._intro_layout()
+        # BACK is hidden on step 0; NEXT becomes BEGIN on the last step.
+        def _btn(rect, label, enabled=True):
+            bg = (40, 40, 70) if enabled else (28, 28, 40)
+            fg = ACCENT_GOLD if enabled else (90, 90, 110)
+            pygame.draw.rect(surf, bg, rect, border_radius=8)
+            pygame.draw.rect(surf, fg, rect, 2, border_radius=8)
+            ts = self.font.render(label, True, fg)
+            surf.blit(ts, (rect.centerx - ts.get_width() // 2,
+                           rect.centery - ts.get_height() // 2))
+
+        _btn(layout["back"], "BACK", enabled=step > 0)
+        _btn(layout["skip"], "SKIP")
+        _btn(layout["next"], "BEGIN" if step == len(steps) - 1 else "NEXT")
 
     def _draw_codex(self, surf) -> None:
         """Browser of every glyph and every boss modifier. Reachable from
@@ -1907,6 +2091,7 @@ class GameEngine:
 
         # Tabs.
         for key, rect, label in (
+            ("rules", layout["tab_rules"], "RULES"),
             ("glyphs", layout["tab_glyphs"], "GLYPHS"),
             ("bosses", layout["tab_bosses"], "BOSSES"),
         ):
@@ -1921,8 +2106,10 @@ class GameEngine:
             surf.blit(ts, (rect.centerx - ts.get_width() // 2,
                            rect.centery - ts.get_height() // 2))
 
-        # Per-entry chips.
-        if self._codex_tab == "glyphs":
+        # Per-tab content.
+        if self._codex_tab == "rules":
+            self._draw_codex_rules(surf)
+        elif self._codex_tab == "glyphs":
             for name, rect in layout["chips"]:
                 count = 0  # codex is meta — no stack count
                 draw_joker_chip(surf, name, count, rect.x, rect.y, rect.w, rect.h)
@@ -1940,6 +2127,49 @@ class GameEngine:
                     ts = name_font.render(line, True, TEXT_COLOR)
                     surf.blit(ts, (rect.x + 6,
                                    rect.y + 6 + li * name_font.get_linesize()))
+
+    def _draw_codex_rules(self, surf) -> None:
+        """RULES tab content — a scrollable card explaining the
+        gameplay concepts (goal, ink/mult, ante, lives, glyphs)."""
+        panel_w = SCREEN_W - 40
+        panel_h = SCREEN_H - 220
+        panel = pygame.Rect(20, 170, panel_w, panel_h)
+        pygame.draw.rect(surf, (16, 16, 28), panel, border_radius=12)
+        pygame.draw.rect(surf, ACCENT_GOLD, panel, 2, border_radius=12)
+
+        from renders.rendering import _wrap_lines
+        h_font = pygame.font.SysFont("sans-serif", 22, bold=True)
+        b_font = pygame.font.SysFont("sans-serif", 18)
+        max_base = self.engine.state.max_base_level
+        sections = [
+            ("Goal",
+             f"Score lines of X's. Beat each level's goal to advance. "
+             f"Survive {max_base} rounds to win the run, then unlock endless."),
+            ("Ink × Mult",
+             "Each completed X line gives ink. Mult grows with your level "
+             "and certain glyphs. Total score = ink × mult."),
+            ("Boss Ante",
+             "On boss games (every 3rd) you MUST hit the boss ante target "
+             "in ink. Fail it → the run ends, even if you 'won' the board."),
+            ("Lives",
+             "Lose a normal game → -1 life. Lives at 0 → the run ends. "
+             "Some glyphs (Sacrifice, Patience, Phoenix) save you."),
+            ("Glyphs",
+             "Permanent buffs bought from the shop. Tap any glyph in the "
+             "bottom row of a shop or game to inspect it — sell for 50%."),
+        ]
+        y = panel.top + 20
+        x = panel.left + 20
+        max_w = panel.width - 40
+        for heading, body in sections:
+            hs = h_font.render(heading, True, ACCENT_GOLD)
+            surf.blit(hs, (x, y))
+            y += hs.get_height() + 4
+            for line in _wrap_lines(body, b_font, max_w):
+                ls = b_font.render(line, True, TEXT_COLOR)
+                surf.blit(ls, (x, y))
+                y += ls.get_height() + 2
+            y += 12
 
     def _draw_boss_inspect(self, surf) -> None:
         """Boss inspect modal — opened from the codex's bosses tab.

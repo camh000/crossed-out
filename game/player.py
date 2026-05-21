@@ -32,6 +32,10 @@ class Player:
     # Last cell you placed an X on (the player's most-recent move).
     # Read by the Last Word glyph and similar "most-recent" effects.
     last_x_cell: tuple[int, int] | None = None
+    # The Editor glyph — cells the AI's perception treats as empty for
+    # the rest of the game. Seeded at game start in CardSystem and read
+    # by OpponentAI via the perceived-grid pipeline.
+    editor_hidden_cells: set[tuple[int, int]] = field(default_factory=set)
 
 
 @dataclass

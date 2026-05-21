@@ -252,6 +252,63 @@ ALL_CARDS: list[CardDef] = [
         "Free joker. Drains 1 life every game start. Can't be removed.",
         "strategy", 2.0,
     ),
+    # --- Creative drop -------------------------------------------------
+    CardDef(
+        "Domino", 4,
+        "Every X you place also drops an X on the cell directly below it",
+        "action",
+        triggers=("on_x_placed",),
+    ),
+    CardDef(
+        "Mitosis", 5,
+        "When you complete an X line, the line duplicates onto the row below (empty cells only)",
+        "buff", 1.5,
+        triggers=("on_line_completed",),
+    ),
+    CardDef(
+        "Anti-Matter", 5,
+        "After every X you place, any O with 2+ adjacent X's flips to X",
+        "buff", 1.4,
+        triggers=("on_x_placed",),
+    ),
+    CardDef(
+        "Wormhole", 4,
+        "X's placed on the edge teleport to the centre instead (only if centre is empty)",
+        "action",
+        triggers=("on_x_placed",),
+    ),
+    CardDef(
+        "Echo Chamber", 6,
+        "Every completed X line scores twice",
+        "power", 1.6,
+    ),
+    CardDef(
+        "Gambit", 3,
+        "Lose 5 ink at scoring, but every X line scores +50%",
+        "buff", 1.3,
+    ),
+    CardDef(
+        "Doppelganger", 6,
+        "At game start, fire one other random owned glyph's game-start handler again",
+        "strategy", 1.5,
+        triggers=("on_game_start",),
+    ),
+    CardDef(
+        "Last Word", 4,
+        "The X line containing your most-recently placed mark gets +25 ink",
+        "buff",
+    ),
+    CardDef(
+        "The Editor", 5,
+        "At game start, two random O cells are hidden from the AI's perception forever",
+        "strategy", 1.4,
+        triggers=("on_game_start",),
+    ),
+    CardDef(
+        "Cardinal", 4,
+        "Lines along the row or column matching your current level number score +100%",
+        "buff",
+    ),
 ]
 
 

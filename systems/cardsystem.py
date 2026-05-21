@@ -33,6 +33,11 @@ _PERSISTENT_UPGRADE_KEYS = {
     "patience",
     "pacifist",
     "cursed_coin",
+    # Creative-drop scoring buffs.
+    "echo_chamber",
+    "gambit",
+    "last_word",
+    "cardinal",
 }
 
 # Pure scoring-buff jokers: name → upgrade key counted from passive_cards.
@@ -60,6 +65,10 @@ _CARD_UPGRADE = {
     "Patience": "patience",
     "Pacifist": "pacifist",
     "Cursed Coin": "cursed_coin",
+    "Echo Chamber": "echo_chamber",
+    "Gambit": "gambit",
+    "Last Word": "last_word",
+    "Cardinal": "cardinal",
 }
 
 
@@ -183,14 +192,21 @@ class CardSystem:
     def _snapshot(board, player: Player) -> tuple:
         """Cheap fingerprint of state that on-board triggers might
         change. Covers placements (move_count + grid hash), wall
-        additions (wall_cells length), and charge consumption (the
-        upgrades values that triggers decrement)."""
+        additions (wall_cells length), charge consumption (the
+        upgrades values that triggers decrement), and AI-perception
+        masks (Editor)."""
         grid_hash = tuple(tuple(row) for row in board.grid)
         upgrade_signal = (
             player.upgrades.get("overload_charges", 0),
             player.upgrades.get("skip_opponent", 0),
         )
-        return (board.move_count, grid_hash, len(board.wall_cells), upgrade_signal)
+        return (
+            board.move_count,
+            grid_hash,
+            len(board.wall_cells),
+            len(player.editor_hidden_cells),
+            upgrade_signal,
+        )
 
     def try_sacrifice_save(self, board, player: Player) -> bool:
         """If the player owns Sacrifice and has charges left, consume one
@@ -230,6 +246,7 @@ class CardSystem:
         spotlight_zone: tuple[int, int] | None = None,
         centre: tuple[int, int] | None = None,
         lives: int = 3,
+        level: int = 1,
     ) -> tuple[int, float, int]:
         """Compute (ink, mult, total) for the current board state.
 
@@ -245,8 +262,15 @@ class CardSystem:
             boss_mechanic=boss_mechanic,
             spotlight_zone=spotlight_zone,
             centre=centre,
+            level=level,
         )
         ink = sum(c["contribution"] for c in contribs)
+
+        # Gambit — flat -5 ink penalty at scoring time. Pairs with the
+        # per-line +50% bonus applied in line_contributions, so the
+        # break-even is small lines and the upside scales with big ones.
+        if player.upgrades.get("gambit", 0) > 0 and contribs:
+            ink -= 5 * player.upgrades.get("gambit", 0)
 
         # Quartet — owning ≥4 distinct buff jokers doubles ink.
         quartet = player.upgrades.get("quartet", 0)
@@ -317,6 +341,7 @@ class CardSystem:
         boss_mechanic: str | None = None,
         spotlight_zone: tuple[int, int] | None = None,
         centre: tuple[int, int] | None = None,
+        level: int = 1,
     ) -> list[dict]:
         """Per-line breakdown of how each completed line contributes to the
         final ink. Used by the result panel to show 'where did the score
@@ -355,6 +380,11 @@ class CardSystem:
         rich_vein = player.upgrades.get("rich_vein", 0)
         joker_diversity = len({n for n in player.passive_cards})
         counter_bonus = player.upgrades.get("counter_bonus_ink", 0)
+        echo_chamber = player.upgrades.get("echo_chamber", 0)
+        gambit = player.upgrades.get("gambit", 0)
+        last_word = player.upgrades.get("last_word", 0)
+        cardinal = player.upgrades.get("cardinal", 0)
+        last_x_cell = player.last_x_cell
 
         rmin = min((rr for (rr, _) in board.valid_cells), default=0)
         rmax = max((rr for (rr, _) in board.valid_cells), default=0)
@@ -425,6 +455,36 @@ class CardSystem:
                 mods.append((f"Counter +{counter_bonus}", counter_bonus))
                 line_ink += counter_bonus
                 counter_bonus = 0  # one-shot
+            # Last Word — the line containing your most-recent X gets
+            # a flat +25 ink, per copy.
+            if last_word > 0 and last_x_cell is not None and last_x_cell in cells:
+                bonus = 25 * last_word
+                mods.append((f"Last Word +{bonus}", bonus))
+                line_ink += bonus
+            # Cardinal — lines along row N or column N (N = current
+            # level number) score +100% per copy. Cells are checked for
+            # uniformity along one axis matching the level.
+            if cardinal > 0:
+                rows_in_line = {r for (r, _) in cells}
+                cols_in_line = {c for (_, c) in cells}
+                if (len(rows_in_line) == 1 and level in rows_in_line) or \
+                   (len(cols_in_line) == 1 and level in cols_in_line):
+                    bonus = line_ink * cardinal
+                    mods.append((f"Cardinal +{100 * cardinal}%", bonus))
+                    line_ink += bonus
+            # Gambit — every X line scores +50% per copy. Pairs with the
+            # flat -5 ink penalty applied in score_breakdown.
+            if gambit > 0:
+                bonus = (line_ink * gambit) // 2
+                mods.append((f"Gambit +{50 * gambit}%", bonus))
+                line_ink += bonus
+            # Echo Chamber — every completed X line scores twice per
+            # copy. Applied last so it amplifies everything above.
+            if echo_chamber > 0:
+                mult_factor = 2 ** echo_chamber
+                extra = line_ink * (mult_factor - 1)
+                mods.append((f"Echo Chamber x{mult_factor}", extra))
+                line_ink *= mult_factor
             # Inverse boss: lines through the centre cell score negative.
             if boss_mechanic == "inverse" and _through_centre(cells):
                 mods.append(("Inverse (centre)", -2 * line_ink))
@@ -831,6 +891,137 @@ def _trigger_interference_on_ai(board, player: Player, r: int, c: int, stacks: i
         pass  # placed_at stamped by place_at
 
 
+# --- Creative-drop trigger handlers ----------------------------------------
+
+def _trigger_domino_on_x(board, player: Player, r: int, c: int, stacks: int) -> None:
+    """Drop an X on the cell directly below the just-placed one. Wraps
+    from the bottom row to the top so the trigger still fires on edge
+    placements. Per copy: drops one extra cell further down."""
+    rows = sorted({rr for (rr, _) in board.valid_cells})
+    if not rows:
+        return
+    rmin, rmax = rows[0], rows[-1]
+    height = rmax - rmin + 1
+    for step in range(1, stacks + 1):
+        target_r = rmin + (r - rmin + step) % height
+        target = (target_r, c)
+        if target == (r, c):
+            continue
+        if target not in board.valid_cells:
+            continue
+        if board.grid[target[0]][target[1]] != EMPTY:
+            continue
+        if target in board.wall_cells:
+            continue
+        if board.place_at(target[0], target[1], PLAYER_X):
+            player.cells_played.append(target)
+
+
+def _trigger_mitosis_on_line(board, player: Player, line_cells, stacks: int) -> None:
+    """Duplicate every cell in the completed line onto the row directly
+    below. Only empty, non-wall cells receive the duplicate."""
+    placed: list[tuple[int, int]] = []
+    for (r, c) in line_cells:
+        target = (r + 1, c)
+        if target not in board.valid_cells:
+            continue
+        if board.grid[target[0]][target[1]] != EMPTY:
+            continue
+        if target in board.wall_cells:
+            continue
+        if board.place_at(target[0], target[1], PLAYER_X):
+            player.cells_played.append(target)
+            placed.append(target)
+
+
+def _trigger_anti_matter_on_x(board, player: Player, r: int, c: int, stacks: int) -> None:
+    """After every X placement, flip any O surrounded by 2+ orthogonally
+    adjacent X's to an X. Cascade-friendly — newly-flipped X's count
+    toward subsequent O checks in the same pass."""
+    flipped_total = 0
+    # One pass for each stack — extra copies trigger an extra cascade
+    # round so heavy stacks blow O clusters apart.
+    for _ in range(stacks):
+        flipped_this_pass = 0
+        for (rr, cc) in list(board.valid_cells):
+            if board.grid[rr][cc] != OPPONENT_O:
+                continue
+            adj_x = 0
+            for (dr, dc) in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                nr, nc = rr + dr, cc + dc
+                if (nr, nc) in board.valid_cells and board.grid[nr][nc] == PLAYER_X:
+                    adj_x += 1
+            if adj_x >= 2:
+                board.grid[rr][cc] = PLAYER_X
+                board.placed_at[rr][cc] = board.move_count
+                flipped_this_pass += 1
+        flipped_total += flipped_this_pass
+        if flipped_this_pass == 0:
+            break
+    if flipped_total:
+        player.upgrades["os_destroyed"] = (
+            player.upgrades.get("os_destroyed", 0) + flipped_total
+        )
+
+
+def _trigger_wormhole_on_x(board, player: Player, r: int, c: int, stacks: int) -> None:
+    """If the just-placed X is on an edge cell, teleport it to the
+    geometric centre instead. Only fires when the centre is empty and
+    not a wall. No-op on non-edge placements."""
+    if not _is_edge(board, r, c):
+        return
+    centre = _board_centre(board)
+    if centre == (r, c):
+        return
+    if centre not in board.valid_cells:
+        return
+    if board.grid[centre[0]][centre[1]] != EMPTY:
+        return
+    if centre in board.wall_cells:
+        return
+    # Move the mark from edge → centre. Preserve the placement-stamp
+    # ordering by re-using move_count rather than bumping it.
+    board.grid[r][c] = EMPTY
+    board.placed_at[r][c] = -1
+    if (r, c) in player.cells_played:
+        player.cells_played.remove((r, c))
+    board.grid[centre[0]][centre[1]] = PLAYER_X
+    board.placed_at[centre[0]][centre[1]] = board.move_count
+    player.cells_played.append(centre)
+    if player.last_x_cell == (r, c):
+        player.last_x_cell = centre
+
+
+def _trigger_doppelganger_start(board, player: Player, stacks: int) -> None:
+    """Fire one other owned game-start glyph's handler a second time.
+    Picks randomly from the set of owned glyphs (excluding itself) that
+    have a registered on_game_start handler. Each stack triggers an
+    additional re-fire."""
+    own = [n for n in player.passive_cards if n != "Doppelganger"]
+    candidates = [n for n in set(own) if n in _GAME_START_HANDLERS]
+    if not candidates:
+        return
+    for _ in range(stacks):
+        chosen = random.choice(candidates)
+        # Replay the chosen handler with its real stack count.
+        _GAME_START_HANDLERS[chosen](board, player, player.passive_cards.count(chosen))
+
+
+def _trigger_editor_start(board, player: Player, stacks: int) -> None:
+    """Mark 2 random valid cells (per copy) as hidden from the AI's
+    perception for the rest of the game. The AI treats those cells as
+    empty when planning, even if it placed an O there earlier."""
+    n = 2 * stacks
+    available = [
+        pos for pos in board.valid_cells
+        if pos not in board.wall_cells and pos not in player.editor_hidden_cells
+    ]
+    if not available:
+        return
+    pick = random.sample(available, min(n, len(available)))
+    player.editor_hidden_cells.update(pick)
+
+
 # ---------------------------------------------------------------------------
 # Dispatch tables — name → handler. Kept at module bottom so handler
 # functions are already defined.
@@ -843,6 +1034,8 @@ _GAME_START_HANDLERS: dict[str, Callable] = {
     "Blind Shot": _trigger_blind_shot_start,
     "Double Strike": _trigger_double_strike_start,
     "Quick Draw": _trigger_quick_draw_start,
+    "Doppelganger": _trigger_doppelganger_start,
+    "The Editor": _trigger_editor_start,
 }
 
 _X_PLACED_HANDLERS: dict[str, Callable] = {
@@ -852,10 +1045,14 @@ _X_PLACED_HANDLERS: dict[str, Callable] = {
     "Stutter": _trigger_stutter_on_x,
     "Magnet": _trigger_magnet_on_x,
     "Cascade": _trigger_cascade_on_x,
+    "Domino": _trigger_domino_on_x,
+    "Anti-Matter": _trigger_anti_matter_on_x,
+    "Wormhole": _trigger_wormhole_on_x,
 }
 
 _LINE_COMPLETE_HANDLERS: dict[str, Callable] = {
     "Chain Reaction": _trigger_chain_reaction_on_line,
+    "Mitosis": _trigger_mitosis_on_line,
 }
 
 _SHOP_OPEN_HANDLERS: dict[str, Callable] = {

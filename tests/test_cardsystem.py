@@ -563,3 +563,228 @@ class TestFinalCountScoring:
         board = Board()
         board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
         assert cs.calculate_score(board, plain, 1) == cs.calculate_score(board, buffed, 1)
+
+
+# ----------------------------------------------------------------------
+# Creative-drop glyphs (Commit 4)
+# ----------------------------------------------------------------------
+
+
+class TestCreativeDropTriggers:
+    def test_domino_drops_x_below(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Domino"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        board.place_at(1, 2, PLAYER_X)
+        cs.fire_x_placed(board, player, 1, 2)
+        assert board.grid[2][2] == PLAYER_X
+
+    def test_domino_wraps_from_bottom_row(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Domino"])
+        cs.apply_passive_buffs(player)
+        board = Board()  # 3x3
+        board.place_at(2, 1, PLAYER_X)
+        cs.fire_x_placed(board, player, 2, 1)
+        assert board.grid[0][1] == PLAYER_X
+
+    def test_domino_skips_occupied_cell(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Domino"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        board.grid[2][2] = OPPONENT_O
+        board.place_at(1, 2, PLAYER_X)
+        cs.fire_x_placed(board, player, 1, 2)
+        # The cell below already has an O — Domino must NOT overwrite it.
+        assert board.grid[2][2] == OPPONENT_O
+
+    def test_mitosis_duplicates_line_to_row_below(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Mitosis"])
+        cs.apply_passive_buffs(player)
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        cs.fire_line_completed(board, player, [(0, 0), (0, 1), (0, 2)])
+        assert board.grid[1][0] == PLAYER_X
+        assert board.grid[1][1] == PLAYER_X
+        assert board.grid[1][2] == PLAYER_X
+
+    def test_mitosis_skips_occupied_cells(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Mitosis"])
+        cs.apply_passive_buffs(player)
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        board.grid[1][1] = OPPONENT_O
+        cs.fire_line_completed(board, player, [(0, 0), (0, 1), (0, 2)])
+        assert board.grid[1][0] == PLAYER_X
+        assert board.grid[1][1] == OPPONENT_O  # untouched
+        assert board.grid[1][2] == PLAYER_X
+
+    def test_anti_matter_flips_o_with_two_adjacent_x(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Anti-Matter"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        # O at (2,2) with X's left and right.
+        board.grid[2][2] = OPPONENT_O
+        board.grid[2][1] = PLAYER_X
+        board.grid[2][3] = PLAYER_X
+        cs.fire_x_placed(board, player, 2, 3)
+        assert board.grid[2][2] == PLAYER_X
+
+    def test_anti_matter_leaves_lone_neighbour_alone(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Anti-Matter"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        board.grid[2][2] = OPPONENT_O
+        board.grid[2][1] = PLAYER_X  # only one adjacent X
+        cs.fire_x_placed(board, player, 2, 1)
+        assert board.grid[2][2] == OPPONENT_O
+
+    def test_wormhole_teleports_edge_to_centre(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Wormhole"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        # Place on a corner (an edge).
+        board.place_at(0, 0, PLAYER_X)
+        player.cells_played.append((0, 0))
+        cs.fire_x_placed(board, player, 0, 0)
+        # Mark moved to the centre.
+        assert board.grid[0][0] == EMPTY
+        assert board.grid[2][2] == PLAYER_X
+        assert (2, 2) in player.cells_played
+        assert (0, 0) not in player.cells_played
+
+    def test_wormhole_skips_non_edge(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Wormhole"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        board.place_at(1, 1, PLAYER_X)
+        player.cells_played.append((1, 1))
+        cs.fire_x_placed(board, player, 1, 1)
+        # Non-edge placements aren't teleported.
+        assert board.grid[1][1] == PLAYER_X
+        assert board.grid[2][2] == EMPTY
+
+    def test_wormhole_does_nothing_if_centre_occupied(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Wormhole"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        board.grid[2][2] = OPPONENT_O
+        board.place_at(0, 0, PLAYER_X)
+        player.cells_played.append((0, 0))
+        cs.fire_x_placed(board, player, 0, 0)
+        # Centre occupied → no teleport, edge X stays.
+        assert board.grid[0][0] == PLAYER_X
+        assert board.grid[2][2] == OPPONENT_O
+
+    def test_doppelganger_refires_another_game_start_glyph(self):
+        cs = CardSystem()
+        # Doppelganger + Fortress (a game-start glyph). Fortress places a
+        # wall; Doppelganger should re-fire it, adding a second wall.
+        random.seed(0)
+        player = Player(passive_cards=["Doppelganger", "Fortress"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        cs.fire_game_start(board, player)
+        # Fortress fires once + Doppelganger re-fires it → 2 walls.
+        assert len(board.wall_cells) == 2
+
+    def test_doppelganger_does_nothing_with_no_other_start_glyphs(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Doppelganger"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        cs.fire_game_start(board, player)
+        # Nothing to mimic — board untouched.
+        assert len(board.wall_cells) == 0
+
+    def test_editor_hides_two_cells_per_copy(self):
+        cs = CardSystem()
+        random.seed(0)
+        player = Player(passive_cards=["The Editor"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        cs.fire_game_start(board, player)
+        assert len(player.editor_hidden_cells) == 2
+
+    def test_editor_two_copies_hides_four(self):
+        cs = CardSystem()
+        random.seed(0)
+        player = Player(passive_cards=["The Editor", "The Editor"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        cs.fire_game_start(board, player)
+        assert len(player.editor_hidden_cells) == 4
+
+
+class TestCreativeDropScoring:
+    def test_echo_chamber_doubles_line_contribution(self):
+        cs = CardSystem()
+        plain = Player()
+        buffed = Player(upgrades={"echo_chamber": 1})
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        plain_c = cs.line_contributions(board, plain)[0]["contribution"]
+        buffed_c = cs.line_contributions(board, buffed)[0]["contribution"]
+        assert buffed_c == 2 * plain_c
+
+    def test_gambit_adds_per_line_bonus_and_global_penalty(self):
+        cs = CardSystem()
+        buffed = Player(upgrades={"gambit": 1})
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        # Per-line: +50% on base 9 → 13. Global: -5.
+        ink, _, _ = cs.score_breakdown(board, buffed, 1)
+        # base 9 + (9 // 2) = 13, then -5 = 8.
+        assert ink == 8
+
+    def test_last_word_adds_25_to_last_x_line(self):
+        cs = CardSystem()
+        player = Player(upgrades={"last_word": 1})
+        player.last_x_cell = (0, 1)
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        contribs = cs.line_contributions(board, player)
+        labels = [m[0] for m in contribs[0]["modifiers"]]
+        assert any("Last Word" in l for l in labels)
+        # base 9 + 25 = 34.
+        assert contribs[0]["contribution"] == 34
+
+    def test_last_word_skips_lines_without_last_cell(self):
+        cs = CardSystem()
+        player = Player(upgrades={"last_word": 1})
+        player.last_x_cell = (2, 2)  # in another line
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        contribs = cs.line_contributions(board, player)
+        labels = [m[0] for m in contribs[0]["modifiers"]]
+        assert not any("Last Word" in l for l in labels)
+
+    def test_cardinal_boosts_row_matching_level(self):
+        cs = CardSystem()
+        player = Player(upgrades={"cardinal": 1})
+        board = Board(size=5)
+        # Row 2 = level 2 → +100%.
+        board.grid[2] = [PLAYER_X, PLAYER_X, PLAYER_X, PLAYER_X, PLAYER_X]
+        contribs = cs.line_contributions(board, player, level=2)
+        labels = [m[0] for m in contribs[0]["modifiers"]]
+        assert any("Cardinal" in l for l in labels)
+        # base 25, +100% → 50.
+        assert contribs[0]["contribution"] == 50
+
+    def test_cardinal_no_effect_on_non_matching_row(self):
+        cs = CardSystem()
+        player = Player(upgrades={"cardinal": 1})
+        board = Board(size=5)
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X, PLAYER_X, PLAYER_X]
+        contribs = cs.line_contributions(board, player, level=3)
+        labels = [m[0] for m in contribs[0]["modifiers"]]
+        assert not any("Cardinal" in l for l in labels)

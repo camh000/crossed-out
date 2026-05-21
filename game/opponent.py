@@ -3,7 +3,12 @@ import random
 
 
 class OpponentAI:
-    def __init__(self, board: Board, fade_age: int | None = None):
+    def __init__(
+        self,
+        board: Board,
+        fade_age: int | None = None,
+        hidden_cells: set[tuple[int, int]] | None = None,
+    ):
         """The AI plays for OPPONENT_O.
 
         `fade_age` enables Blind-boss symmetry: when set, the AI sees
@@ -13,30 +18,43 @@ class OpponentAI:
         real-occupied cell (a faded mark it couldn't see), it falls
         back to a random truly-empty cell — that way the AI stays
         informationally blind without wasting its turn entirely.
+
+        `hidden_cells` is The Editor glyph's perception mask — those
+        cells appear empty to the AI for the duration of the game,
+        regardless of what was actually placed there.
         """
         self.board = board
         self.difficulty = 0.7  # 70% optimal play
         self.fade_age = fade_age
+        self.hidden_cells = hidden_cells or set()
 
     def get_best_move(self) -> tuple[int, int] | None:
         """Return best empty cell for opponent O."""
         if self.board.game_over:
             return None
-        if self.fade_age is None:
+        if self.fade_age is None and not self.hidden_cells:
             return self._compute_move()
-        # Swap grid for a faded view while the AI deliberates. Mutations
-        # made by _try_win / _try_block during scoring land on the
-        # perceived copy and never touch the real grid.
+        # Swap grid for a faded / masked view while the AI deliberates.
+        # Mutations made by _try_win / _try_block during scoring land on
+        # the perceived copy and never touch the real grid.
         real_grid = self.board.grid
-        self.board.grid = self.board.visible_grid_view(self.fade_age)
+        if self.fade_age is not None:
+            view = self.board.visible_grid_view(self.fade_age)
+        else:
+            view = [row[:] for row in real_grid]
+        for (hr, hc) in self.hidden_cells:
+            if 0 <= hr < len(view) and 0 <= hc < len(view[0]):
+                view[hr][hc] = 0
+        self.board.grid = view
         try:
             move = self._compute_move()
         finally:
             self.board.grid = real_grid
-        # If the chosen cell is actually occupied (a faded mark the AI
-        # couldn't see) OR a wall, fall back to a truly-empty cell
-        # instead of forfeiting. Stays informationally blind without
-        # giving the player a free turn every time the AI guesses wrong.
+        # If the chosen cell is actually occupied (a faded / hidden mark
+        # the AI couldn't see) OR a wall, fall back to a truly-empty
+        # cell instead of forfeiting. Stays informationally blind
+        # without giving the player a free turn every time the AI
+        # guesses wrong.
         if move is not None and (
             real_grid[move[0]][move[1]] != 0
             or move in self.board.wall_cells

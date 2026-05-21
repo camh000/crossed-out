@@ -155,6 +155,9 @@ class GameEngine:
         pl.last_mult = 1.0
         pl.player.blind_shot_marks = []
         pl.player.cells_played = []
+        pl.player.first_placed_cells = set()
+        pl.player.last_x_cell = None
+        pl.player.editor_hidden_cells = set()
         pl.game_result = None
         # Re-seed every passive joker's stack into the upgrade counters.
         self.card_system.apply_passive_buffs(pl.player)
@@ -340,7 +343,11 @@ class GameEngine:
             if pl.current_boss.mechanic in ("echo", "twins", "two_headed"):
                 extras = 1
         for i in range(1 + extras):
-            ai = OpponentAI(self.board, fade_age=self._ai_fade_age())
+            ai = OpponentAI(
+                self.board,
+                fade_age=self._ai_fade_age(),
+                hidden_cells=pl.player.editor_hidden_cells,
+            )
             if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "hivemind":
                 ai.difficulty = 1.0  # always-optimal heuristic
             move = ai.get_best_move()
@@ -572,6 +579,7 @@ class GameEngine:
             spotlight_zone=spotlight,
             centre=centre,
             lives=pl.lives,
+            level=pl.level,
         )
         pl.last_ink = ink
         pl.last_mult = mult
@@ -588,6 +596,7 @@ class GameEngine:
             boss_mechanic=boss_mech,
             spotlight_zone=spotlight,
             centre=centre,
+            level=pl.level,
         )
         # First Strike: flip the "first X line scored" flag after this
         # evaluation so subsequent games stop applying the +20 bonus.
@@ -1151,7 +1160,11 @@ class GameEngine:
                     surf.blit(ts, (SCREEN_W // 2 - ts.get_width() // 2, 60))
                 else:
                     before_marks = self.board.move_count
-                    ai = OpponentAI(self.board, fade_age=self._ai_fade_age())
+                    ai = OpponentAI(
+                        self.board,
+                        fade_age=self._ai_fade_age(),
+                        hidden_cells=pl.player.editor_hidden_cells,
+                    )
                     move = ai.get_best_move()
                     if move:
                         self.board.place_at(move[0], move[1], OPPONENT_O)

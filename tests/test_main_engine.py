@@ -1530,6 +1530,38 @@ class TestRoundLabel:
         assert engine.engine.state.max_base_level == 7
 
 
+class TestHighScoresRoute:
+    """finish_run records a high-score entry every run. The 'scores'
+    state surfaces them."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_finish_run_records_score(self, mock_caption, mock_mode, mock_init):
+        # Use a fresh-ish save so the record list starts empty.
+        import os
+        save_path = os.path.join(
+            os.path.dirname(__file__), '..', 'crossed_out_save.json',
+        )
+        if os.path.exists(save_path):
+            os.remove(save_path)
+        from main import GameEngine
+        from save.savesetup import load_scores
+        engine = GameEngine()
+        engine.engine.state.total_score = 1234
+        engine.engine.state.level = 5
+        engine.finish_run(won=True)
+        scores = load_scores()
+        assert len(scores) == 1
+        assert scores[0]["total_score"] == 1234
+        assert scores[0]["level_reached"] == 5
+        assert scores[0]["won"] is True
+        # The just-finished entry is remembered for the gold-highlight pass.
+        assert engine._last_score_entry["total_score"] == 1234
+        if os.path.exists(save_path):
+            os.remove(save_path)
+
+
 class TestBlindAI:
     """The AI is symmetrically blind during Blind boss games: it reads
     the same faded grid the player sees, so faded threats are invisible

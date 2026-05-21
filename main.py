@@ -8,6 +8,7 @@ from systems.cardsystem import CardSystem
 from systems.roguelite import RogueliteEngine
 from save.savesetup import (
     save_progression, get_unlocked_cards, is_intro_seen, mark_intro_seen,
+    record_score, load_scores,
 )
 from config.constants import (
     SCREEN_W, SCREEN_H, BG_COLOR, TEXT_COLOR, TEXT_SUB,
@@ -135,6 +136,9 @@ class GameEngine:
         # First-run intro overlay: zero-indexed step number while in
         # the "intro" state.
         self._intro_step: int = 0
+        # The just-completed run's high-score entry — highlighted in
+        # the scores table for one screen pass after the run ends.
+        self._last_score_entry: dict | None = None
 
     def new_run(self):
         self.engine.start_new_run()
@@ -297,6 +301,19 @@ class GameEngine:
             levels_reached=self.engine.state.level,
             cards_unlocked=get_unlocked_cards(),
         )
+        # High-score record — appended even on losses so the player
+        # has a history to beat. Endless runs get tagged so the table
+        # can distinguish "won the base run" from "kept going forever".
+        import time as _time
+        entry = {
+            "total_score": int(self.engine.state.total_score),
+            "level_reached": int(self.engine.state.level),
+            "won": bool(won),
+            "endless": bool(self.engine.state.endless_mode),
+            "ts": int(_time.time()),
+        }
+        record_score(entry)
+        self._last_score_entry = entry
         self.engine.state.won_run = won
         self.engine.state.run_complete = True
         self.state = "gameover"
@@ -801,14 +818,25 @@ class GameEngine:
             surf.blit(codex_btn_h, (SCREEN_W // 2 - codex_btn_h.get_width() // 2,
                                     codex_btn.centery - codex_btn_h.get_height() // 2))
 
+            # HIGH SCORES button — opens the persisted top-20 table.
+            scores_h = pygame.font.SysFont("consolas", 22).render("HIGH SCORES", True, TEXT_COLOR)
+            scores_btn = pygame.Rect(SCREEN_W // 2 - 120, SCREEN_H // 2 + 120, 240, 50)
+            pygame.draw.rect(surf, (40, 40, 70), scores_btn, border_radius=10)
+            pygame.draw.rect(surf, ACCENT_GOLD, scores_btn, 2, border_radius=10)
+            surf.blit(scores_h, (SCREEN_W // 2 - scores_h.get_width() // 2,
+                                 scores_btn.centery - scores_h.get_height() // 2))
+
             desc = self.font.render("Click [X] on the grid to play. Tap glyphs to inspect them.", True, TEXT_SUB)
-            surf.blit(desc, (SCREEN_W // 2 - desc.get_width() // 2, SCREEN_H // 2 + 140))
+            surf.blit(desc, (SCREEN_W // 2 - desc.get_width() // 2, SCREEN_H // 2 + 200))
 
         elif self.state == "codex":
             self._draw_codex(surf)
 
         elif self.state == "intro":
             self._draw_intro(surf)
+
+        elif self.state == "scores":
+            self._draw_scores(surf)
 
         elif self.state == "transition":
             lv = pl.level
@@ -1469,11 +1497,14 @@ class GameEngine:
         if self.state == "menu":
             btn = pygame.Rect(SCREEN_W // 2 - 160, SCREEN_H // 2 - 30, 320, 60)
             codex_btn = pygame.Rect(SCREEN_W // 2 - 120, SCREEN_H // 2 + 60, 240, 50)
+            scores_btn = pygame.Rect(SCREEN_W // 2 - 120, SCREEN_H // 2 + 120, 240, 50)
             if btn.collidepoint(mx, my):
                 self.new_run()
             elif codex_btn.collidepoint(mx, my):
                 self.state = "codex"
                 self._codex_tab = "glyphs"
+            elif scores_btn.collidepoint(mx, my):
+                self.state = "scores"
 
         elif self.state == "codex":
             layout = self._codex_layout()
@@ -1503,6 +1534,14 @@ class GameEngine:
                     else:
                         self._inspecting_boss = name
                     return
+
+        elif self.state == "scores":
+            back = pygame.Rect(20, 20, 100, 44)
+            if back.collidepoint(mx, my):
+                # Clear the "just finished" highlight on the way out.
+                self._last_score_entry = None
+                self.state = "menu"
+            return
 
         elif self.state == "intro":
             layout = self._intro_layout()
@@ -2025,6 +2064,69 @@ class GameEngine:
             "next": pygame.Rect(SCREEN_W - btn_w - 40, bottom_y, btn_w, btn_h),
             "skip": pygame.Rect(SCREEN_W // 2 - btn_w // 2, bottom_y, btn_w, btn_h),
         }
+
+    def _draw_scores(self, surf) -> None:
+        """High-scores table. Top 20 by total_score, with the
+        just-completed run highlighted gold for one screen pass."""
+        draw_big_centered_text(surf, "HIGH SCORES", self.big_font, ACCENT_GOLD, 60)
+
+        # BACK button.
+        back = pygame.Rect(20, 20, 100, 44)
+        pygame.draw.rect(surf, (40, 40, 60), back, border_radius=8)
+        pygame.draw.rect(surf, ACCENT_GOLD, back, 2, border_radius=8)
+        bf = self.font.render("BACK", True, TEXT_COLOR)
+        surf.blit(bf, (back.centerx - bf.get_width() // 2,
+                       back.centery - bf.get_height() // 2))
+
+        scores = load_scores()
+        if not scores:
+            empty = self.font.render(
+                "No runs recorded yet. Start a run!", True, TEXT_SUB,
+            )
+            surf.blit(empty, (SCREEN_W // 2 - empty.get_width() // 2, 300))
+            return
+
+        # Column layout — rank, score, round reached, mode, outcome.
+        cols = [
+            (40,  "#"),
+            (110, "SCORE"),
+            (290, "ROUND"),
+            (430, "MODE"),
+            (570, "OUTCOME"),
+        ]
+        header_y = 160
+        header_font = pygame.font.SysFont("consolas", 18, bold=True)
+        for x, label in cols:
+            hs = header_font.render(label, True, TEXT_SUB)
+            surf.blit(hs, (x, header_y))
+
+        row_y = header_y + 36
+        row_h = 36
+        row_font = pygame.font.SysFont("consolas", 18)
+        last = self._last_score_entry
+        for i, e in enumerate(scores):
+            is_highlight = last is not None and (
+                e.get("ts") == last.get("ts")
+                and e.get("total_score") == last.get("total_score")
+            )
+            y = row_y + i * row_h
+            if is_highlight:
+                hl = pygame.Rect(30, y - 2, SCREEN_W - 60, row_h - 4)
+                pygame.draw.rect(surf, (45, 45, 25), hl, border_radius=6)
+                pygame.draw.rect(surf, ACCENT_GOLD, hl, 2, border_radius=6)
+            mode_label = "endless" if e.get("endless") else "base"
+            outcome = "WON" if e.get("won") else "LOST"
+            values = [
+                f"{i + 1}",
+                f"{e.get('total_score', 0)}",
+                f"{e.get('level_reached', 0)}",
+                mode_label,
+                outcome,
+            ]
+            colour = ACCENT_GOLD if is_highlight else TEXT_COLOR
+            for (x, _), value in zip(cols, values):
+                ts = row_font.render(value, True, colour)
+                surf.blit(ts, (x, y))
 
     def _draw_intro(self, surf) -> None:
         """First-run tutorial overlay. 3 steps with Back / Skip / Next."""

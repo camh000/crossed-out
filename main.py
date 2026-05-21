@@ -18,7 +18,7 @@ from config.constants import (
 from config.cards import pick_random, get_by_name, ALL_CARDS
 from config.bosses import BOSS_LIST
 from renders.rendering import (
-    draw_card, draw_score, draw_tokens,
+    draw_card, draw_tokens,
     draw_centered_text, draw_big_centered_text, draw_centered_multiline_text,
     draw_joker_chip, get_vignette, get_cell_shadow,
 )
@@ -1193,9 +1193,14 @@ class GameEngine:
                     show_chips=show_chips,
                 )
 
-            # score display
-            draw_score(surf, pl.player.score, pl.current_target, 20, 30)
+            # Score display — surfaces the cumulative level score (the
+            # number that actually advances the run), the level goal,
+            # and the run total beneath. The per-side ink chips on
+            # the right summarise how each side's ink is accumulating
+            # so the player can read "who's ahead" at a glance.
+            self._draw_level_progress(surf, pl)
             draw_tokens(surf, pl.player.tokens, SCREEN_W - 200, 30)
+            self._draw_side_ink_totals(surf, pl)
             # Round counter — "Round N / 7" during the base run; in
             # endless mode we drop the denominator since there's no
             # finish line.
@@ -1258,15 +1263,12 @@ class GameEngine:
                     pygame.draw.circle(surf, (60, 60, 80), (cx, cy), pip_r)
                     pygame.draw.circle(surf, ACCENT_RED, (cx, cy), pip_r, 2)
             if pl.current_boss:
-                boss_txt = self.font.render(f"BOSS: {pl.current_boss.name}", True, ACCENT_RED)
+                boss_txt = self.font.render(
+                    f"BOSS: {pl.current_boss.name}", True, ACCENT_RED,
+                )
                 surf.blit(boss_txt, (SCREEN_W - 10 - boss_txt.get_width(), 60))
                 if pl.ante_target > 0:
-                    ante_color = ACCENT_GREEN if pl.score_this_game >= pl.ante_target else ACCENT_RED
-                    ante_txt = self.font.render(
-                        f"Boss Ante: {pl.score_this_game} / {pl.ante_target}",
-                        True, ante_color,
-                    )
-                    surf.blit(ante_txt, (SCREEN_W - 10 - ante_txt.get_width(), 85))
+                    self._draw_boss_ante_panel(surf, pl)
                 # Mirror — show which side the player's next click places.
                 if pl.current_boss.mechanic == "mirror":
                     side = "O" if self._mirror_player_o else "X"
@@ -1274,7 +1276,7 @@ class GameEngine:
                     side_txt = self.font.render(
                         f"Next: {side}", True, side_color,
                     )
-                    surf.blit(side_txt, (SCREEN_W - 10 - side_txt.get_width(), 110))
+                    surf.blit(side_txt, (SCREEN_W - 10 - side_txt.get_width(), 85))
 
             # timed boss countdown
             if (
@@ -2202,6 +2204,90 @@ class GameEngine:
                 (mx_ - ls.get_width() // 2, my_ - ls.get_height() // 2),
             )
 
+    def _draw_level_progress(self, surf, pl) -> None:
+        """Top-left score block. Shows cumulative `score_this_level`
+        as the big number (this is the value that actually advances
+        the run), with the level goal + run total as a subtitle
+        underneath. Replaces the previous per-game-only score
+        display."""
+        big_font = pygame.font.SysFont("consolas", 60)
+        sub_font = pygame.font.SysFont("sans-serif", 14)
+        big = big_font.render(str(pl.score_this_level), True, ACCENT_GOLD)
+        surf.blit(big, (20, 30))
+        target = pl.get_target() if hasattr(pl, "get_target") else 0
+        sub_line1 = sub_font.render(
+            f"Level Goal: {target} ink", True, TEXT_SUB,
+        )
+        surf.blit(sub_line1, (20, 30 + big.get_height() + 4))
+        sub_line2 = sub_font.render(
+            f"Run total: {pl.total_score}", True, TEXT_SUB,
+        )
+        surf.blit(
+            sub_line2,
+            (20, 30 + big.get_height() + 4 + sub_line1.get_height() + 2),
+        )
+
+    def _draw_side_ink_totals(self, surf, pl) -> None:
+        """Per-side ink chips under tokens (top-right). Sum the
+        positive X-line contributions and the magnitude of O-line
+        contributions so the player can read who's ahead in lines.
+        Hidden when no lines have been completed yet."""
+        contribs = pl.live_line_contributions
+        if not contribs:
+            return
+        x_ink = sum(c["contribution"] for c in contribs if c["side"] == "X")
+        o_ink = sum(abs(c["contribution"]) for c in contribs if c["side"] == "O")
+        font = pygame.font.SysFont("consolas", 22, bold=True)
+        x_surf = font.render(f"X: {x_ink}", True, COLOR_X)
+        o_surf = font.render(f"O: {o_ink}", True, COLOR_O)
+        # Right-aligned, stacked under the tokens row.
+        right = SCREEN_W - 12
+        y = 70
+        surf.blit(x_surf, (right - x_surf.get_width(), y))
+        surf.blit(
+            o_surf,
+            (right - o_surf.get_width(), y + x_surf.get_height() + 2),
+        )
+
+    def _draw_boss_ante_panel(self, surf, pl) -> None:
+        """Prominent Boss Ante banner. Shows '{current} / {target}' in
+        large bold text plus a horizontal progress bar that turns
+        green when the target is met. Centred in the top strip so
+        it's the most readable element during boss games."""
+        current = pl.score_this_game
+        target = pl.ante_target
+        met = current >= target
+        big = pygame.font.SysFont("consolas", 28, bold=True)
+        sub = pygame.font.SysFont("sans-serif", 14, bold=True)
+        eyebrow = sub.render("BOSS ANTE", True, ACCENT_RED)
+        number = big.render(
+            f"{current} / {target}", True,
+            ACCENT_GREEN if met else ACCENT_RED,
+        )
+        # Centre horizontally on the screen.
+        cx = SCREEN_W // 2
+        eyebrow_y = 50
+        number_y = 65
+        bar_y = 96
+        surf.blit(eyebrow, (cx - eyebrow.get_width() // 2, eyebrow_y))
+        surf.blit(number, (cx - number.get_width() // 2, number_y))
+        # Progress bar — capped at 100%. Background dark, fill colour
+        # tracks the same met / not-met cue as the number.
+        bar_w = 220
+        bar_h = 6
+        bar_x = cx - bar_w // 2
+        pygame.draw.rect(surf, (40, 40, 60), (bar_x, bar_y, bar_w, bar_h),
+                         border_radius=3)
+        fill_frac = min(1.0, current / target) if target > 0 else 0
+        fill_w = int(bar_w * fill_frac)
+        if fill_w > 0:
+            pygame.draw.rect(
+                surf,
+                ACCENT_GREEN if met else ACCENT_RED,
+                (bar_x, bar_y, fill_w, bar_h),
+                border_radius=3,
+            )
+
     def _draw_help_icon(self, surf) -> None:
         """Round '?' button rendered in the top-right of the game state.
         Tapping it pushes into the codex's RULES tab and routes BACK
@@ -2434,12 +2520,19 @@ class GameEngine:
             ("Goal",
              f"Score lines of X's. Beat each level's goal to advance. "
              f"Survive {max_base} rounds to win the run, then unlock endless."),
+            ("How a game ends",
+             "Both you and the AI keep placing until the grid is FULL — "
+             "completing a line doesn't end the game. Then your X lines "
+             "are counted against the AI's O lines. More X lines = win, "
+             "more O = lose, tied = the grid grows and play continues "
+             "(forever, if it keeps tying)."),
             ("Ink × Mult",
              "Each completed X line gives ink. Mult grows with your level "
              "and certain glyphs. Total score = ink × mult."),
             ("Boss Ante",
              "On boss games (every 3rd) you MUST hit the boss ante target "
-             "in ink. Fail it → the run ends, even if you 'won' the board."),
+             "in ink. Fail it → the run ends, even if you 'won' the board. "
+             "Every boss also grows the grid by +1 row + 1 col."),
             ("Lives",
              "Lose a normal game → -1 life. Lives at 0 → the run ends. "
              "Some glyphs (Sacrifice, Patience, Phoenix) save you."),

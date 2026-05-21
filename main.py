@@ -248,7 +248,13 @@ class GameEngine:
 
     def _setup_boss_board(self, boss) -> None:
         """Per-mechanic board mutations + scratch resets. Called once
-        from `_begin_boss_game` after the boss has been chosen."""
+        from `_begin_boss_game` after the boss has been chosen.
+
+        Every boss game grows the grid by one row + one column BEFORE
+        per-mechanic setup runs — so the player's draw-growth carries
+        forward and each boss reliably adds pressure. The grow happens
+        before mechanic setup so cells in the new row/col are eligible
+        for poison sampling, ghost_wall placement, etc."""
         bm = boss.mechanic
         # Always-reset scratch (no matter the mechanic).
         self._tide_clear_deadlines = []
@@ -258,6 +264,15 @@ class GameEngine:
         self._hot_potato_cell = None
         if bm != "spotlight":
             self._spotlight_anchor = None
+        # Grow the board first — no external cells to shift because
+        # start_game already cleared cells_played / blind_shot_marks.
+        rows_before = self.board.rows
+        cols_before = self.board.cols
+        row_shift, col_shift = self.board.grow_row_and_column()
+        new_row_idx = 0 if row_shift == 1 else rows_before
+        new_col_idx = 0 if col_shift == 1 else cols_before
+        self.animator.start(f"grid_grow_row:{new_row_idx}", 500)
+        self.animator.start(f"grid_grow_col:{new_col_idx}", 500)
         # Per-mechanic setup.
         if bm == "poison":
             empty = self.board.get_empty_cells()
@@ -709,10 +724,11 @@ class GameEngine:
         pl.score_this_level += total
 
     def _resolve_draw(self, pl) -> str:
-        """First draw in a game grows the grid and continues play.
-        Second draw converts to a loss (returned as the new outcome)."""
-        if pl.draws_this_game >= 1:
-            return "lose"
+        """Every draw grows the grid by one row + one column and lets
+        play continue. There's no cap — consecutive draws keep growing
+        the board until the player or AI gets a decisive line count
+        over a full board. The diminishing `draw_multiplier` (halved
+        per draw) discourages stalling on its own."""
         pl.draws_this_game += 1
         pl.draw_multiplier *= 0.5
         rows_before = self.board.rows

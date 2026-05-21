@@ -596,35 +596,69 @@ class GameEngine:
         return self.board.is_full()
 
     def evaluate_and_settle(self):
+        """End-of-game resolution: fire line-completion glyphs, score the
+        board, decide outcome (win/lose/draw + ante check), apply
+        rewards/penalties, and show the result panel.
+
+        Returns the final outcome string ("win", "lose", "draw", or
+        "saved" when Sacrifice intervenes). Short-circuits via
+        `_resolve_draw` (grid grows, game continues) or the Sacrifice
+        rescue before applying any win/lose effects.
+        """
         pl = self.engine.state
         is_boss = bool(pl.is_boss and pl.current_boss)
+        boss_mech = pl.current_boss.mechanic if pl.current_boss else None
+        self._score_current_game(pl, is_boss, boss_mech)
+        outcome = self._boss_outcome() if is_boss else self._normal_outcome()
+        ante_failed = (
+            is_boss and outcome == "win" and pl.score_this_game < pl.ante_target
+        )
+        if ante_failed:
+            outcome = "lose"
+        if outcome == "draw":
+            draw_outcome = self._resolve_draw(pl)
+            if draw_outcome == "draw":
+                return "draw"
+            outcome = draw_outcome  # converted to "lose" — fall through
+        if outcome == "lose" and not ante_failed:
+            if self._try_sacrifice_rescue(pl):
+                return "saved"
+        if outcome == "win":
+            self._award_win_rewards(pl)
+        else:
+            self._apply_loss(pl)
+        pl.game_result = outcome
+        self._show_result_panel(pl)
+        self._check_run_end(pl, ante_failed)
+        return outcome
 
-        # Fire on_line_completed triggers (Chain Reaction) BEFORE scoring,
-        # so the line-extending flips count toward this game's ink. Track
-        # any new marks the triggers placed and the joker names that fired
-        # so the renderer can animate them in.
+    def _score_current_game(self, pl, is_boss: bool, boss_mech: str | None) -> None:
+        """Fire on_line_completed triggers, compute ink × mult, and
+        stamp pl.last_ink / mult / total / line_contributions so the
+        result panel can paint the breakdown."""
+        # Fire on_line_completed triggers (Chain Reaction, Mitosis)
+        # BEFORE scoring, so any line-extending flips count toward
+        # this game's ink. Animate any triggered placements.
         x_lines_for_triggers = [
             cells for (val, cells) in self.board.get_lines() if val == PLAYER_X
         ]
         before_marks = self.board.move_count
         for line in x_lines_for_triggers:
-            fired = self.card_system.fire_line_completed(self.board, pl.player, line)
+            fired = self.card_system.fire_line_completed(
+                self.board, pl.player, line,
+            )
             self._animate_jokers(fired)
         self._animate_new_marks(before_move_count=before_marks)
-
-        # Bump the per-game X-line count BEFORE scoring so Crescendo
-        # (Mult +0.2 per line scored this game) reflects the current
-        # round's lines, and First Strike's "first line" flag flips
-        # AFTER this evaluation.
-        boss_mech = pl.current_boss.mechanic if pl.current_boss else None
         spotlight = self._spotlight_anchor if boss_mech == "spotlight" else None
         centre = self._board_centre() if boss_mech == "inverse" else None
-        x_line_count = sum(1 for (v, _) in self.board.get_lines() if v == PLAYER_X)
+        # Bump the per-game X-line count BEFORE scoring so Crescendo
+        # (Mult +0.2 per line scored this game) reflects this round.
+        x_line_count = sum(
+            1 for (v, _) in self.board.get_lines() if v == PLAYER_X
+        )
         pl.player.upgrades["lines_scored"] = (
             pl.player.upgrades.get("lines_scored", 0) + x_line_count
         )
-
-        # Single ink × mult scoring pass for the current board state.
         ink, mult, total = self.card_system.score_breakdown(
             self.board, pl.player, pl.get_multiplier(),
             is_boss=is_boss,
@@ -636,13 +670,7 @@ class GameEngine:
         )
         pl.last_ink = ink
         pl.last_mult = mult
-        # Capture THIS evaluation's total separately from the running
-        # game total so the score count-up animates from 0 to the value
-        # contributed by this round (not the cumulative).
         pl.last_total = total
-        # Per-line contribution breakdown for the result panel — colour-
-        # codes each completed line on the board with a "+N" or "-N" so
-        # the player sees exactly where the score came from.
         pl.last_line_contributions = self.card_system.line_contributions(
             self.board, pl.player,
             is_boss=is_boss,
@@ -660,123 +688,104 @@ class GameEngine:
         pl.total_score += total
         pl.score_this_level += total
 
-        # Outcome by lines (mechanic-aware).
-        outcome = self._boss_outcome() if is_boss else self._normal_outcome()
+    def _resolve_draw(self, pl) -> str:
+        """First draw in a game grows the grid and continues play.
+        Second draw converts to a loss (returned as the new outcome)."""
+        if pl.draws_this_game >= 1:
+            return "lose"
+        pl.draws_this_game += 1
+        pl.draw_multiplier *= 0.5
+        rows_before = self.board.rows
+        cols_before = self.board.cols
+        row_shift, col_shift = self.board.grow_row_and_column()
+        if row_shift or col_shift:
+            pl.player.cells_played = [
+                (r + row_shift, c + col_shift) for (r, c) in pl.player.cells_played
+            ]
+            pl.player.blind_shot_marks = [
+                (r + row_shift, c + col_shift) for (r, c) in pl.player.blind_shot_marks
+            ]
+        new_row_idx = 0 if row_shift == 1 else rows_before
+        new_col_idx = 0 if col_shift == 1 else cols_before
+        self.animator.start(f"grid_grow_row:{new_row_idx}", 500)
+        self.animator.start(f"grid_grow_col:{new_col_idx}", 500)
+        self.board.game_over = False
+        self.showing_result = False
+        pl.game_result = "draw"
+        self.draw_message_until = pygame.time.get_ticks() + 1500
+        self.draw_message_cell = None
+        return "draw"
 
-        # Boss ante check — a mechanical win that doesn't hit the ink
-        # target counts as a loss and ends the run.
-        ante_failed = False
-        if is_boss and outcome == "win" and pl.score_this_game < pl.ante_target:
-            outcome = "lose"
-            ante_failed = True
+    def _try_sacrifice_rescue(self, pl) -> bool:
+        """If the player owns Sacrifice with a charge left, consume it,
+        undo the last X, and treat the loss as a continuing draw.
+        Returns True iff the rescue fired."""
+        if not self.card_system.try_sacrifice_save(self.board, pl.player):
+            return False
+        self.board.game_over = False
+        self.showing_result = False
+        pl.game_result = "draw"
+        self.draw_message_until = pygame.time.get_ticks() + 1500
+        return True
 
-        if outcome == "draw":
-            if pl.draws_this_game >= 1:
-                # Second draw within the same game converts to a loss.
-                outcome = "lose"
-            else:
-                pl.draws_this_game += 1
-                pl.draw_multiplier *= 0.5
-                rows_before = self.board.rows
-                cols_before = self.board.cols
-                row_shift, col_shift = self.board.grow_row_and_column()
-                if row_shift or col_shift:
-                    pl.player.cells_played = [
-                        (r + row_shift, c + col_shift) for (r, c) in pl.player.cells_played
-                    ]
-                    pl.player.blind_shot_marks = [
-                        (r + row_shift, c + col_shift) for (r, c) in pl.player.blind_shot_marks
-                    ]
-                # Identify the newly-added row and column index so the
-                # grid-grow animation can highlight those cells.
-                new_row_idx = 0 if row_shift == 1 else rows_before
-                new_col_idx = 0 if col_shift == 1 else cols_before
-                self.animator.start(f"grid_grow_row:{new_row_idx}", 500)
-                self.animator.start(f"grid_grow_col:{new_col_idx}", 500)
-                self.board.game_over = False
-                self.showing_result = False
-                pl.game_result = "draw"
-                self.draw_message_until = pygame.time.get_ticks() + 1500
-                self.draw_message_cell = None
-                return "draw"
+    def _award_win_rewards(self, pl) -> None:
+        base_reward = 2
+        token_bonus_stacks = pl.player.upgrades.get("token_bonus", 0)
+        pl.player.tokens += max(1, round(base_reward * pl.draw_multiplier))
+        pl.player.tokens += 3 * token_bonus_stacks
+        # Vampire: +N tokens paid on win, accumulated over AI moves.
+        vamp = pl.player.upgrades.get("vampire_tokens", 0)
+        if vamp:
+            pl.player.tokens += vamp
+        # Pacifist: +2 tokens if you destroyed ZERO O's this game.
+        pacifist = pl.player.upgrades.get("pacifist", 0)
+        if pacifist > 0 and pl.player.upgrades.get("os_destroyed", 0) == 0:
+            pl.player.tokens += 2 * pacifist
+        pl.draw_multiplier = 1.0
+        pl.consecutive_wins += 1
 
-        # Sacrifice rescue — if the player owns a Sacrifice joker with a
-        # charge left, consume the charge, undo the last X they placed,
-        # and treat this as if the loss never happened (the game becomes
-        # a continuing draw on the post-undo board). Only applies to
-        # non-ante losses — losing the ante means the round is over.
-        if outcome == "lose" and not ante_failed:
-            if self.card_system.try_sacrifice_save(self.board, pl.player):
-                self.board.game_over = False
-                self.showing_result = False
-                pl.game_result = "draw"
-                self.draw_message_until = pygame.time.get_ticks() + 1500
-                return "saved"
+    def _apply_loss(self, pl) -> None:
+        pl.draw_multiplier = 1.0
+        pl.consecutive_wins = 0
+        # Patience: if a game ends with the board full and you scored
+        # zero X lines, gain a life back instead of losing one.
+        patience = pl.player.upgrades.get("patience", 0)
+        zero_lines = sum(
+            1 for (v, _) in self.board.get_lines() if v == PLAYER_X
+        ) == 0
+        if patience > 0 and zero_lines and pl.lives < pl.max_lives:
+            pl.lives += 1
+            return
+        lost_pip_idx = pl.lives - 1
+        pl.lives -= 1
+        self.animator.start(f"life_lost:{lost_pip_idx}", 500)
 
-        if outcome == "win":
-            base_reward = 2
-            token_bonus_stacks = pl.player.upgrades.get("token_bonus", 0)
-            pl.player.tokens += max(1, round(base_reward * pl.draw_multiplier))
-            pl.player.tokens += 3 * token_bonus_stacks
-            # Vampire: +N tokens paid on win, accumulated over AI moves.
-            vamp = pl.player.upgrades.get("vampire_tokens", 0)
-            if vamp:
-                pl.player.tokens += vamp
-            # Pacifist: +2 tokens if you destroyed ZERO O's this game.
-            pacifist = pl.player.upgrades.get("pacifist", 0)
-            if pacifist > 0 and pl.player.upgrades.get("os_destroyed", 0) == 0:
-                pl.player.tokens += 2 * pacifist
-            pl.draw_multiplier = 1.0
-            # Streak counter — read by any future momentum-scaling glyph.
-            pl.consecutive_wins += 1
-        else:  # lose
-            pl.draw_multiplier = 1.0
-            pl.consecutive_wins = 0
-            # Patience: if a game ends with the board full and you
-            # scored zero X lines, gain a life back. Caps at max_lives.
-            patience = pl.player.upgrades.get("patience", 0)
-            zero_lines = sum(
-                1 for (v, _) in self.board.get_lines() if v == PLAYER_X
-            ) == 0
-            if patience > 0 and zero_lines and pl.lives < pl.max_lives:
-                pl.lives += 1
-            else:
-                lost_pip_idx = pl.lives - 1
-                pl.lives -= 1
-                self.animator.start(f"life_lost:{lost_pip_idx}", 500)
-
-        pl.game_result = outcome
+    def _show_result_panel(self, pl) -> None:
+        """Anchor the staged result reveal: panel slide-up + ink/mult/
+        total count-ups, plus the per-line glow streaks."""
         self.showing_result = True
         self.board.game_over = True
-
-        # Staged result reveal: panel slides up; ink, mult, and total
-        # count in sequence. Anchor the wall-clock timer here so the
-        # renderer can compute each sub-phase's progress on read.
         self._result_anim_start = pygame.time.get_ticks()
         self.animator.start("result_panel", 400)
-
-        # Highlight every completed line on the board with a coloured
-        # streak — gold for your X lines, red for the AI's O lines. The
-        # animation id encodes the side so the renderer can pick the
-        # right colour without re-scanning the board.
         for contrib in pl.last_line_contributions:
             cells_str = "-".join(f"{r},{c}" for r, c in contrib["cells"])
             line_id = f"line_glow:{contrib['side']}:{cells_str}"
             self.animator.start(line_id, 800)
 
-        # Run-ending failure modes — ante failure on a boss, or zero lives.
-        if ante_failed or pl.lives <= 0:
-            # Phoenix: first time per run that we'd lose, restore a life.
-            if (
-                pl.player.upgrades.get("phoenix", 0) > 0
-                and not pl.phoenix_used
-                and pl.lives <= 0
-            ):
-                pl.phoenix_used = True
-                pl.lives = 1
-            else:
-                self._pending_run_end = True
-        return outcome
+    def _check_run_end(self, pl, ante_failed: bool) -> None:
+        """Run terminates on ante failure or zero lives. Phoenix
+        intervenes once per run on the zero-lives path."""
+        if not (ante_failed or pl.lives <= 0):
+            return
+        if (
+            pl.player.upgrades.get("phoenix", 0) > 0
+            and not pl.phoenix_used
+            and pl.lives <= 0
+        ):
+            pl.phoenix_used = True
+            pl.lives = 1
+            return
+        self._pending_run_end = True
 
     def _normal_outcome(self) -> str:
         xp = self.board.count_lines_for(PLAYER_X)

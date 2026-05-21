@@ -1,16 +1,11 @@
 {
   "game/opponent.py:get_best_move": 38.1,
-  "main.py:_quicksand_tick": 160.9,
   "main.py:_tick_ai_move": 201.0,
-  "main.py:_tide_tick": 34.8,
-  "main.py:_vandal_strike": 60.7,
   "main.py:evaluate_and_settle": 309.1,
   "main.py:handle_click": 4732.4,
   "main.py:handle_motion": 60.7,
   "main.py:run": 49.3,
   "main.py:start_game": 43.5,
-  "systems/cardsystem.py:_trigger_flame_on_x": 35.7,
-  "systems/cardsystem.py:_trigger_interference_on_ai": 36.9,
   "systems/cardsystem.py:line_contributions": 238.0,
   "systems/cardsystem.py:score_breakdown": 189.5
 }

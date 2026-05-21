@@ -1947,3 +1947,204 @@ class TestNewBosses:
         )
         # _tick_ai_move on Echo runs the AI exactly once (1 new O).
         assert os_after - os_before == 1
+
+
+class TestQuicksandTick:
+    """Direct unit tests for `_quicksand_tick`. The helper iterates the
+    board and erases marks that have been left without a same-side
+    neighbour for >= 3 moves. Tested in isolation — no full-game
+    fixture needed."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_erases_isolated_mark_past_age_threshold(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        # X at (2, 2) placed at move 1; no same-side neighbours.
+        # Advance move_count so the age exceeds 3.
+        engine.board.grid[2][2] = PLAYER_X
+        engine.board.placed_at[2][2] = 1
+        engine.board.move_count = 5
+        engine._quicksand_tick()
+        assert engine.board.grid[2][2] == 0
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_preserves_mark_with_same_neighbour(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        engine.board.grid[2][2] = PLAYER_X
+        engine.board.grid[2][3] = PLAYER_X  # same-side neighbour
+        engine.board.placed_at[2][2] = 1
+        engine.board.placed_at[2][3] = 1
+        engine.board.move_count = 5
+        engine._quicksand_tick()
+        # Both survive — each one is the other's neighbour.
+        assert engine.board.grid[2][2] == PLAYER_X
+        assert engine.board.grid[2][3] == PLAYER_X
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_skips_recently_placed(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        engine.board.grid[2][2] = PLAYER_X
+        engine.board.placed_at[2][2] = 3
+        engine.board.move_count = 4  # age = 1 < 3 → safe
+        engine._quicksand_tick()
+        assert engine.board.grid[2][2] == PLAYER_X
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_empty_cells_untouched(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.board.reset(3)
+        engine.board.move_count = 10
+        engine._quicksand_tick()
+        # No marks → no removals.
+        assert all(
+            engine.board.grid[r][c] == 0 for r in range(3) for c in range(3)
+        )
+
+
+class TestVandalStrike:
+    """Direct unit tests for `_vandal_strike`. Removes one random
+    non-edge X cell per call, or no-ops when none exist."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_removes_interior_x(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        engine.board.grid[2][2] = PLAYER_X  # interior cell
+        engine._vandal_strike()
+        assert engine.board.grid[2][2] == 0
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_skips_edge_x(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        # Only edge X's → vandal has no candidates and no-ops.
+        engine.board.grid[0][0] = PLAYER_X
+        engine.board.grid[0][4] = PLAYER_X
+        engine.board.grid[4][2] = PLAYER_X
+        engine._vandal_strike()
+        assert engine.board.grid[0][0] == PLAYER_X
+        assert engine.board.grid[0][4] == PLAYER_X
+        assert engine.board.grid[4][2] == PLAYER_X
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_no_op_on_empty_board(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.board.reset(5)
+        # No X's at all — no-op, no crash.
+        engine._vandal_strike()
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_removes_exactly_one_per_call(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        for (r, c) in [(1, 1), (1, 2), (2, 1), (2, 3)]:
+            engine.board.grid[r][c] = PLAYER_X
+        before = sum(
+            1 for r in range(5) for c in range(5)
+            if engine.board.grid[r][c] == PLAYER_X
+        )
+        engine._vandal_strike()
+        after = sum(
+            1 for r in range(5) for c in range(5)
+            if engine.board.grid[r][c] == PLAYER_X
+        )
+        assert before - after == 1
+
+
+class TestTideTick:
+    """`_tide_tick` walks `_tide_clear_deadlines` and clears any cells
+    whose deadline has passed (move_count >= when)."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_clears_cells_at_or_past_deadline(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        engine.board.grid[1][0] = PLAYER_X
+        engine.board.grid[1][1] = PLAYER_X
+        engine.board.grid[1][2] = PLAYER_X
+        engine.board.move_count = 10
+        engine._tide_clear_deadlines = [(10, [(1, 0), (1, 1), (1, 2)])]
+        engine._tide_tick()
+        assert engine.board.grid[1][0] == 0
+        assert engine.board.grid[1][1] == 0
+        assert engine.board.grid[1][2] == 0
+        # Deadline consumed.
+        assert engine._tide_clear_deadlines == []
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_keeps_cells_before_deadline(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        engine.board.grid[0][0] = PLAYER_X
+        engine.board.move_count = 5
+        engine._tide_clear_deadlines = [(10, [(0, 0)])]
+        engine._tide_tick()
+        # Mark survives; deadline preserved for a later tick.
+        assert engine.board.grid[0][0] == PLAYER_X
+        assert engine._tide_clear_deadlines == [(10, [(0, 0)])]
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_empty_list_noop(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.board.reset(5)
+        engine._tide_clear_deadlines = []
+        engine._tide_tick()  # no crash
+        assert engine._tide_clear_deadlines == []
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_already_cleared_cell_is_skipped(self, mc, mm, mi):
+        """If a scheduled cell is already empty (e.g. cleared by another
+        boss mechanic), the tick must not crash."""
+        from main import GameEngine
+        engine = GameEngine()
+        engine.board.reset(5)
+        # Cell is empty even though it's scheduled.
+        engine.board.move_count = 10
+        engine._tide_clear_deadlines = [(10, [(2, 2)])]
+        engine._tide_tick()
+        assert engine._tide_clear_deadlines == []

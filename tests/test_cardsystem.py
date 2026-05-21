@@ -494,6 +494,110 @@ class TestXPlacedTriggersExtended:
         )
         assert xs == 1
 
+    # --- Flame ---------------------------------------------------------
+
+    def test_flame_destroys_orthogonal_o(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Flame"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        # O's orthogonally adjacent to the X placement; Flame wipes them.
+        board.grid[1][2] = OPPONENT_O  # up
+        board.grid[3][2] = OPPONENT_O  # down
+        board.grid[2][1] = OPPONENT_O  # left
+        board.grid[2][3] = OPPONENT_O  # right
+        board.place_at(2, 2, PLAYER_X)
+        cs.fire_x_placed(board, player, 2, 2)
+        assert board.grid[1][2] == EMPTY
+        assert board.grid[3][2] == EMPTY
+        assert board.grid[2][1] == EMPTY
+        assert board.grid[2][3] == EMPTY
+
+    def test_flame_does_not_destroy_diagonal_o(self):
+        """Flame is ortho-only; an O on the diagonal survives the trigger."""
+        cs = CardSystem()
+        player = Player(passive_cards=["Flame"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        board.grid[1][1] = OPPONENT_O  # diagonal — should survive
+        board.place_at(2, 2, PLAYER_X)
+        cs.fire_x_placed(board, player, 2, 2)
+        assert board.grid[1][1] == OPPONENT_O
+
+    def test_flame_consumes_charge_only_on_destruction(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Flame"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        # No adjacent O → no destruction → charge preserved.
+        board.place_at(2, 2, PLAYER_X)
+        cs.fire_x_placed(board, player, 2, 2)
+        assert player.upgrades["flame_charges"] == 1
+        # Now add an O and fire — charge gets consumed.
+        board.grid[1][2] = OPPONENT_O
+        board.place_at(2, 0, PLAYER_X)
+        cs.fire_x_placed(board, player, 2, 2)
+        assert player.upgrades["flame_charges"] == 0
+        assert board.grid[1][2] == EMPTY
+
+    def test_flame_bails_with_zero_charges(self):
+        """A second placement after the charge is spent is a no-op."""
+        cs = CardSystem()
+        player = Player(passive_cards=["Flame"])
+        cs.apply_passive_buffs(player)
+        player.upgrades["flame_charges"] = 0
+        board = Board(size=5)
+        board.grid[1][2] = OPPONENT_O
+        board.place_at(2, 2, PLAYER_X)
+        cs.fire_x_placed(board, player, 2, 2)
+        # O survives because the charge pool is empty.
+        assert board.grid[1][2] == OPPONENT_O
+
+    # --- Interference --------------------------------------------------
+
+    def test_interference_rerolls_every_fourth_ai_move(self):
+        """1-stack Interference re-rolls every 4th AI placement to a
+        random empty cell."""
+        cs = CardSystem()
+        player = Player(passive_cards=["Interference"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        # The AI placed an O at (0, 0). Fire 3 dummy ticks first so the
+        # 4th trigger does the re-roll.
+        for i in range(3):
+            board.grid[i][0] = OPPONENT_O
+            cs.fire_ai_placed(board, player, i, 0)
+        board.grid[3][0] = OPPONENT_O
+        import random as _r
+        _r.seed(0)
+        cs.fire_ai_placed(board, player, 3, 0)
+        # The fourth O has been moved off (3, 0).
+        assert board.grid[3][0] == EMPTY
+
+    def test_interference_no_op_off_cycle(self):
+        cs = CardSystem()
+        player = Player(passive_cards=["Interference"])
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        board.grid[0][0] = OPPONENT_O
+        cs.fire_ai_placed(board, player, 0, 0)
+        # First AI move (count=1) — no re-roll happens.
+        assert board.grid[0][0] == OPPONENT_O
+
+    def test_interference_stacks_increase_frequency(self):
+        """3 stacks → every 2nd AI move re-rolls (max(2, 5-3) == 2)."""
+        cs = CardSystem()
+        player = Player(passive_cards=["Interference"] * 3)
+        cs.apply_passive_buffs(player)
+        board = Board(size=5)
+        board.grid[0][0] = OPPONENT_O
+        cs.fire_ai_placed(board, player, 0, 0)  # count=1, no trigger
+        board.grid[0][1] = OPPONENT_O
+        import random as _r
+        _r.seed(0)
+        cs.fire_ai_placed(board, player, 0, 1)  # count=2, trigger
+        assert board.grid[0][1] == EMPTY
+
 
 # ----------------------------------------------------------------------
 # on_line_completed triggers

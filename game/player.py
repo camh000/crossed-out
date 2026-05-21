@@ -108,6 +108,10 @@ class RunState:
     last_mult: float = 1.0
     last_total: int = 0
     last_line_contributions: list = field(default_factory=list)
+    # Per-frame view of the current-board line breakdown. Refreshed
+    # after every placement so the HUD can render live line glows +
+    # per-side ink totals without waiting for the result panel.
+    live_line_contributions: list = field(default_factory=list)
     player: Player = field(default_factory=Player)
 
     # Grid sizes per base-run level. Endless extends with +1 row/col

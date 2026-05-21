@@ -18,7 +18,7 @@ from config.constants import (
 from config.cards import pick_random, get_by_name, ALL_CARDS
 from config.bosses import BOSS_LIST
 from renders.rendering import (
-    draw_card, draw_score, draw_tokens,
+    draw_card, draw_tokens,
     draw_centered_text, draw_big_centered_text, draw_centered_multiline_text,
     draw_joker_chip, get_vignette, get_cell_shadow,
 )
@@ -182,6 +182,9 @@ class GameEngine:
         pl.player.first_placed_cells = set()
         pl.player.last_x_cell = None
         pl.player.editor_hidden_cells = set()
+        # Live HUD cache — clears so leftover lines from last game
+        # don't paint on the empty new board.
+        pl.live_line_contributions = []
         # Mirror boss — reset the side-toggle so a fresh game always
         # starts the player on X.
         self._mirror_player_o = False
@@ -248,7 +251,13 @@ class GameEngine:
 
     def _setup_boss_board(self, boss) -> None:
         """Per-mechanic board mutations + scratch resets. Called once
-        from `_begin_boss_game` after the boss has been chosen."""
+        from `_begin_boss_game` after the boss has been chosen.
+
+        Every boss game grows the grid by one row + one column BEFORE
+        per-mechanic setup runs — so the player's draw-growth carries
+        forward and each boss reliably adds pressure. The grow happens
+        before mechanic setup so cells in the new row/col are eligible
+        for poison sampling, ghost_wall placement, etc."""
         bm = boss.mechanic
         # Always-reset scratch (no matter the mechanic).
         self._tide_clear_deadlines = []
@@ -258,6 +267,15 @@ class GameEngine:
         self._hot_potato_cell = None
         if bm != "spotlight":
             self._spotlight_anchor = None
+        # Grow the board first — no external cells to shift because
+        # start_game already cleared cells_played / blind_shot_marks.
+        rows_before = self.board.rows
+        cols_before = self.board.cols
+        row_shift, col_shift = self.board.grow_row_and_column()
+        new_row_idx = 0 if row_shift == 1 else rows_before
+        new_col_idx = 0 if col_shift == 1 else cols_before
+        self.animator.start(f"grid_grow_row:{new_row_idx}", 500)
+        self.animator.start(f"grid_grow_col:{new_col_idx}", 500)
         # Per-mechanic setup.
         if bm == "poison":
             empty = self.board.get_empty_cells()
@@ -395,6 +413,7 @@ class GameEngine:
             return
         self._execute_ai_placement(pl)
         self._apply_post_move_mechanics(pl)
+        self._refresh_line_view(pl)
         if self._should_evaluate():
             self.evaluate_and_settle()
 
@@ -708,11 +727,31 @@ class GameEngine:
         pl.total_score += total
         pl.score_this_level += total
 
+    def _refresh_line_view(self, pl) -> None:
+        """Recompute the per-line contribution list for the current
+        board state and cache it on `pl.live_line_contributions`. The
+        HUD's live line glow + per-side ink totals read from this
+        cache. Called after every placement (player + AI). Cheap on
+        small boards — sub-millisecond per call."""
+        boss_mech = pl.current_boss.mechanic if pl.current_boss else None
+        is_boss = bool(pl.is_boss and pl.current_boss)
+        spotlight = self._spotlight_anchor if boss_mech == "spotlight" else None
+        centre = self._board_centre() if boss_mech == "inverse" else None
+        pl.live_line_contributions = self.card_system.line_contributions(
+            self.board, pl.player,
+            is_boss=is_boss,
+            boss_mechanic=boss_mech,
+            spotlight_zone=spotlight,
+            centre=centre,
+            level=pl.level,
+        )
+
     def _resolve_draw(self, pl) -> str:
-        """First draw in a game grows the grid and continues play.
-        Second draw converts to a loss (returned as the new outcome)."""
-        if pl.draws_this_game >= 1:
-            return "lose"
+        """Every draw grows the grid by one row + one column and lets
+        play continue. There's no cap — consecutive draws keep growing
+        the board until the player or AI gets a decisive line count
+        over a full board. The diminishing `draw_multiplier` (halved
+        per draw) discourages stalling on its own."""
         pl.draws_this_game += 1
         pl.draw_multiplier *= 0.5
         rows_before = self.board.rows
@@ -1136,53 +1175,32 @@ class GameEngine:
                           off_y + r1 * avail + avail // 2)
                 pygame.draw.line(surf, glow_col, start_px, end_px, 8)
 
-            # While the result panel is up, paint each completed line
-            # with a steady streak (so the player can study WHICH lines
-            # scored), and float a "+N" / "-N" label at the line's
-            # midpoint showing its contribution to ink.
-            if self.showing_result and pl.last_line_contributions:
-                badge_font = pygame.font.SysFont("consolas", max(18, avail // 4), bold=True)
-                for contrib in pl.last_line_contributions:
-                    cells = contrib["cells"]
-                    if len(cells) < 2:
-                        continue
-                    r0, c0 = cells[0]
-                    r1, c1 = cells[-1]
-                    start_px = (off_x + c0 * avail + avail // 2,
-                                off_y + r0 * avail + avail // 2)
-                    end_px = (off_x + c1 * avail + avail // 2,
-                              off_y + r1 * avail + avail // 2)
-                    if contrib["side"] == "X":
-                        streak_col = (255, 200, 80)
-                        sign = "+"
-                    else:
-                        streak_col = (255, 90, 90)
-                        # Double Cross flips O to positive contribution.
-                        sign = "+" if contrib["contribution"] >= 0 else "-"
-                    pygame.draw.line(surf, streak_col, start_px, end_px, 5)
-                    # Midpoint label with the signed contribution. We
-                    # render onto a small dark-rect "chip" for legibility
-                    # over both empty cells and placed marks.
-                    mx_ = (start_px[0] + end_px[0]) // 2
-                    my_ = (start_px[1] + end_px[1]) // 2
-                    label = f"{sign}{abs(contrib['contribution'])}"
-                    ls = badge_font.render(label, True, streak_col)
-                    bw, bh = ls.get_width() + 12, ls.get_height() + 4
-                    pygame.draw.rect(
-                        surf, (8, 8, 16),
-                        (mx_ - bw // 2, my_ - bh // 2, bw, bh),
-                        border_radius=4,
-                    )
-                    pygame.draw.rect(
-                        surf, streak_col,
-                        (mx_ - bw // 2, my_ - bh // 2, bw, bh),
-                        1, border_radius=4,
-                    )
-                    surf.blit(ls, (mx_ - ls.get_width() // 2, my_ - ls.get_height() // 2))
+            # Paint coloured streaks for every completed line, BOTH
+            # during play and on the result panel. The data source
+            # differs: live cache during play, frozen snapshot during
+            # result. The "+N" / "-N" midpoint chips only render on
+            # the result panel — they'd jitter during play as
+            # modifiers fire and feel noisy.
+            if self.showing_result:
+                contribs_to_paint = pl.last_line_contributions
+                show_chips = True
+            else:
+                contribs_to_paint = pl.live_line_contributions
+                show_chips = False
+            if contribs_to_paint:
+                self._draw_line_contributions(
+                    surf, contribs_to_paint, off_x, off_y, avail,
+                    show_chips=show_chips,
+                )
 
-            # score display
-            draw_score(surf, pl.player.score, pl.current_target, 20, 30)
+            # Score display — surfaces the cumulative level score (the
+            # number that actually advances the run), the level goal,
+            # and the run total beneath. The per-side ink chips on
+            # the right summarise how each side's ink is accumulating
+            # so the player can read "who's ahead" at a glance.
+            self._draw_level_progress(surf, pl)
             draw_tokens(surf, pl.player.tokens, SCREEN_W - 200, 30)
+            self._draw_side_ink_totals(surf, pl)
             # Round counter — "Round N / 7" during the base run; in
             # endless mode we drop the denominator since there's no
             # finish line.
@@ -1245,15 +1263,12 @@ class GameEngine:
                     pygame.draw.circle(surf, (60, 60, 80), (cx, cy), pip_r)
                     pygame.draw.circle(surf, ACCENT_RED, (cx, cy), pip_r, 2)
             if pl.current_boss:
-                boss_txt = self.font.render(f"BOSS: {pl.current_boss.name}", True, ACCENT_RED)
+                boss_txt = self.font.render(
+                    f"BOSS: {pl.current_boss.name}", True, ACCENT_RED,
+                )
                 surf.blit(boss_txt, (SCREEN_W - 10 - boss_txt.get_width(), 60))
                 if pl.ante_target > 0:
-                    ante_color = ACCENT_GREEN if pl.score_this_game >= pl.ante_target else ACCENT_RED
-                    ante_txt = self.font.render(
-                        f"Boss Ante: {pl.score_this_game} / {pl.ante_target}",
-                        True, ante_color,
-                    )
-                    surf.blit(ante_txt, (SCREEN_W - 10 - ante_txt.get_width(), 85))
+                    self._draw_boss_ante_panel(surf, pl)
                 # Mirror — show which side the player's next click places.
                 if pl.current_boss.mechanic == "mirror":
                     side = "O" if self._mirror_player_o else "X"
@@ -1261,7 +1276,7 @@ class GameEngine:
                     side_txt = self.font.render(
                         f"Next: {side}", True, side_color,
                     )
-                    surf.blit(side_txt, (SCREEN_W - 10 - side_txt.get_width(), 110))
+                    surf.blit(side_txt, (SCREEN_W - 10 - side_txt.get_width(), 85))
 
             # timed boss countdown
             if (
@@ -1772,6 +1787,7 @@ class GameEngine:
             and pl.current_boss.mechanic == "tide"
         ):
             self._schedule_tide_erasure()
+        self._refresh_line_view(pl)
         if self._should_evaluate():
             self.evaluate_and_settle()
             return
@@ -2137,6 +2153,141 @@ class GameEngine:
         x, y, w, h = self.HELP_RECT
         return x <= mx <= x + w and y <= my <= y + h
 
+    def _draw_line_contributions(
+        self, surf, contribs, off_x, off_y, avail, *, show_chips: bool,
+    ) -> None:
+        """Paint each completed line as a coloured streak (gold for X,
+        red for O). When `show_chips` is True (result panel only),
+        also float a `+N` / `-N` chip at the line's midpoint with the
+        line's ink contribution."""
+        badge_font = (
+            pygame.font.SysFont("consolas", max(18, avail // 4), bold=True)
+            if show_chips else None
+        )
+        for contrib in contribs:
+            cells = contrib["cells"]
+            if len(cells) < 2:
+                continue
+            r0, c0 = cells[0]
+            r1, c1 = cells[-1]
+            start_px = (off_x + c0 * avail + avail // 2,
+                        off_y + r0 * avail + avail // 2)
+            end_px = (off_x + c1 * avail + avail // 2,
+                      off_y + r1 * avail + avail // 2)
+            if contrib["side"] == "X":
+                streak_col = (255, 200, 80)
+                sign = "+"
+            else:
+                streak_col = (255, 90, 90)
+                # Double Cross flips O to a positive contribution.
+                sign = "+" if contrib["contribution"] >= 0 else "-"
+            pygame.draw.line(surf, streak_col, start_px, end_px, 5)
+            if not show_chips:
+                continue
+            mx_ = (start_px[0] + end_px[0]) // 2
+            my_ = (start_px[1] + end_px[1]) // 2
+            label = f"{sign}{abs(contrib['contribution'])}"
+            ls = badge_font.render(label, True, streak_col)
+            bw, bh = ls.get_width() + 12, ls.get_height() + 4
+            pygame.draw.rect(
+                surf, (8, 8, 16),
+                (mx_ - bw // 2, my_ - bh // 2, bw, bh),
+                border_radius=4,
+            )
+            pygame.draw.rect(
+                surf, streak_col,
+                (mx_ - bw // 2, my_ - bh // 2, bw, bh),
+                1, border_radius=4,
+            )
+            surf.blit(
+                ls,
+                (mx_ - ls.get_width() // 2, my_ - ls.get_height() // 2),
+            )
+
+    def _draw_level_progress(self, surf, pl) -> None:
+        """Top-left score block. Shows cumulative `score_this_level`
+        as the big number (this is the value that actually advances
+        the run), with the level goal + run total as a subtitle
+        underneath. Replaces the previous per-game-only score
+        display."""
+        big_font = pygame.font.SysFont("consolas", 60)
+        sub_font = pygame.font.SysFont("sans-serif", 14)
+        big = big_font.render(str(pl.score_this_level), True, ACCENT_GOLD)
+        surf.blit(big, (20, 30))
+        target = pl.get_target() if hasattr(pl, "get_target") else 0
+        sub_line1 = sub_font.render(
+            f"Level Goal: {target} ink", True, TEXT_SUB,
+        )
+        surf.blit(sub_line1, (20, 30 + big.get_height() + 4))
+        sub_line2 = sub_font.render(
+            f"Run total: {pl.total_score}", True, TEXT_SUB,
+        )
+        surf.blit(
+            sub_line2,
+            (20, 30 + big.get_height() + 4 + sub_line1.get_height() + 2),
+        )
+
+    def _draw_side_ink_totals(self, surf, pl) -> None:
+        """Per-side ink chips under tokens (top-right). Sum the
+        positive X-line contributions and the magnitude of O-line
+        contributions so the player can read who's ahead in lines.
+        Hidden when no lines have been completed yet."""
+        contribs = pl.live_line_contributions
+        if not contribs:
+            return
+        x_ink = sum(c["contribution"] for c in contribs if c["side"] == "X")
+        o_ink = sum(abs(c["contribution"]) for c in contribs if c["side"] == "O")
+        font = pygame.font.SysFont("consolas", 22, bold=True)
+        x_surf = font.render(f"X: {x_ink}", True, COLOR_X)
+        o_surf = font.render(f"O: {o_ink}", True, COLOR_O)
+        # Right-aligned, stacked under the tokens row.
+        right = SCREEN_W - 12
+        y = 70
+        surf.blit(x_surf, (right - x_surf.get_width(), y))
+        surf.blit(
+            o_surf,
+            (right - o_surf.get_width(), y + x_surf.get_height() + 2),
+        )
+
+    def _draw_boss_ante_panel(self, surf, pl) -> None:
+        """Prominent Boss Ante banner. Shows '{current} / {target}' in
+        large bold text plus a horizontal progress bar that turns
+        green when the target is met. Centred in the top strip so
+        it's the most readable element during boss games."""
+        current = pl.score_this_game
+        target = pl.ante_target
+        met = current >= target
+        big = pygame.font.SysFont("consolas", 28, bold=True)
+        sub = pygame.font.SysFont("sans-serif", 14, bold=True)
+        eyebrow = sub.render("BOSS ANTE", True, ACCENT_RED)
+        number = big.render(
+            f"{current} / {target}", True,
+            ACCENT_GREEN if met else ACCENT_RED,
+        )
+        # Centre horizontally on the screen.
+        cx = SCREEN_W // 2
+        eyebrow_y = 50
+        number_y = 65
+        bar_y = 96
+        surf.blit(eyebrow, (cx - eyebrow.get_width() // 2, eyebrow_y))
+        surf.blit(number, (cx - number.get_width() // 2, number_y))
+        # Progress bar — capped at 100%. Background dark, fill colour
+        # tracks the same met / not-met cue as the number.
+        bar_w = 220
+        bar_h = 6
+        bar_x = cx - bar_w // 2
+        pygame.draw.rect(surf, (40, 40, 60), (bar_x, bar_y, bar_w, bar_h),
+                         border_radius=3)
+        fill_frac = min(1.0, current / target) if target > 0 else 0
+        fill_w = int(bar_w * fill_frac)
+        if fill_w > 0:
+            pygame.draw.rect(
+                surf,
+                ACCENT_GREEN if met else ACCENT_RED,
+                (bar_x, bar_y, fill_w, bar_h),
+                border_radius=3,
+            )
+
     def _draw_help_icon(self, surf) -> None:
         """Round '?' button rendered in the top-right of the game state.
         Tapping it pushes into the codex's RULES tab and routes BACK
@@ -2369,12 +2520,19 @@ class GameEngine:
             ("Goal",
              f"Score lines of X's. Beat each level's goal to advance. "
              f"Survive {max_base} rounds to win the run, then unlock endless."),
+            ("How a game ends",
+             "Both you and the AI keep placing until the grid is FULL — "
+             "completing a line doesn't end the game. Then your X lines "
+             "are counted against the AI's O lines. More X lines = win, "
+             "more O = lose, tied = the grid grows and play continues "
+             "(forever, if it keeps tying)."),
             ("Ink × Mult",
              "Each completed X line gives ink. Mult grows with your level "
              "and certain glyphs. Total score = ink × mult."),
             ("Boss Ante",
              "On boss games (every 3rd) you MUST hit the boss ante target "
-             "in ink. Fail it → the run ends, even if you 'won' the board."),
+             "in ink. Fail it → the run ends, even if you 'won' the board. "
+             "Every boss also grows the grid by +1 row + 1 col."),
             ("Lives",
              "Lose a normal game → -1 life. Lives at 0 → the run ends. "
              "Some glyphs (Sacrifice, Patience, Phoenix) save you."),

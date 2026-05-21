@@ -267,10 +267,12 @@ class TestDrawGrowsGrid:
     @patch('pygame.display.set_mode')
     @patch('pygame.display.set_caption')
     @patch('pygame.time.get_ticks', return_value=1000)
-    def test_second_draw_within_same_game_loses_a_life(self, mock_ticks, mock_caption, mock_mode, mock_init):
-        """Drawing twice in one game now ends as a loss and costs a life
-        (the old behaviour was to keep growing forever for a 0.9x penalty,
-        which was the exploit)."""
+    def test_consecutive_draws_keep_growing(self, mock_ticks, mock_caption, mock_mode, mock_init):
+        """Draws are now unlimited — every draw grows the grid by one
+        row + one column and lets play continue. The diminishing
+        draw_multiplier (halved per draw) is the only stalling
+        penalty. Old behaviour: 2nd draw → -1 life. New behaviour:
+        2nd / 3rd / Nth draw → keep growing, no life lost."""
         from main import GameEngine
         from game.board import PLAYER_X, OPPONENT_O
         engine = GameEngine()
@@ -290,17 +292,19 @@ class TestDrawGrowsGrid:
         ]
         assert engine.evaluate_and_settle() == "draw"
         assert pl.draws_this_game == 1
-        # Force a second draw on the now-grown board by re-creating the
-        # tied pattern and re-evaluating.
+        # Force a second draw on the now-grown board.
         engine.board.reset(3)
         engine.board.grid = [
             [PLAYER_X, PLAYER_X, PLAYER_X],
             [OPPONENT_O, OPPONENT_O, OPPONENT_O],
             [PLAYER_X, OPPONENT_O, PLAYER_X],
         ]
-        result = engine.evaluate_and_settle()
-        assert result == "lose"
-        assert pl.lives == lives_before - 1
+        assert engine.evaluate_and_settle() == "draw"
+        assert pl.draws_this_game == 2
+        # No life lost on the second draw — that's the whole point.
+        assert pl.lives == lives_before
+        # Multiplier has halved twice (1.0 → 0.5 → 0.25).
+        assert pl.draw_multiplier == 0.25
 
     @patch('pygame.init')
     @patch('pygame.display.set_mode')
@@ -703,9 +707,12 @@ class TestClickToAdvance:
             engine.new_run()
         pl = engine.engine.state
         pl.games_in_level = 2
-        engine.start_game()  # → boss
+        engine.start_game()  # → boss (also grows the grid by 1 row/col)
         engine.state = "game"
-        engine.board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        # Place an X line at the top of the (post-grow) board.
+        engine.board.grid[0][0] = PLAYER_X
+        engine.board.grid[0][1] = PLAYER_X
+        engine.board.grid[0][2] = PLAYER_X
         pl.player.score = 10
         pl.current_target = 1
         # Make the ante trivially passable for this test — the ante check
@@ -1721,6 +1728,43 @@ class TestNewBosses:
     @patch('pygame.init')
     @patch('pygame.display.set_mode')
     @patch('pygame.display.set_caption')
+    def test_boss_game_grows_grid_by_one_row_and_col(self, mock_caption, mock_mode, mock_init):
+        """Every boss game adds one row + one column on top of whatever
+        the current grid size is. _setup_boss_board grows BEFORE per-
+        mechanic setup so new cells are eligible for poison / ghost_wall
+        sampling."""
+        from main import GameEngine
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        engine.board.reset(5)  # start at 5x5
+        rows_before = engine.board.rows
+        cols_before = engine.board.cols
+        engine._setup_boss_board(BOSS_MAP["weighted"])
+        assert engine.board.rows == rows_before + 1
+        assert engine.board.cols == cols_before + 1
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_boss_grow_carries_draw_growth(self, mock_caption, mock_mode, mock_init):
+        """A board that's already 6x7 from a draw becomes 7x8 when the
+        next boss game sets up — no shrink, just one more on each axis."""
+        from main import GameEngine
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        engine.board.reset(5)
+        # Simulate draw-growth by manually growing once.
+        engine.board.grow_row_and_column()
+        engine.board.grow_row_and_column()
+        rows_before = engine.board.rows
+        cols_before = engine.board.cols
+        engine._setup_boss_board(BOSS_MAP["weighted"])
+        assert engine.board.rows == rows_before + 1
+        assert engine.board.cols == cols_before + 1
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
     def test_cartographer_swap_preserves_marks(self, mock_caption, mock_mode, mock_init):
         from main import GameEngine
         from game.board import PLAYER_X, OPPONENT_O
@@ -2283,3 +2327,60 @@ class TestTideTick:
         engine._tide_clear_deadlines = [(10, [(2, 2)])]
         engine._tide_tick()
         assert engine._tide_clear_deadlines == []
+
+
+class TestLiveLineView:
+    """`_refresh_line_view` fills `pl.live_line_contributions` so the
+    HUD can paint live streaks + per-side ink totals without waiting
+    for the result panel."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_refresh_populates_x_lines(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(3)
+        pl = engine.engine.state
+        engine.board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        engine._refresh_line_view(pl)
+        assert len(pl.live_line_contributions) == 1
+        assert pl.live_line_contributions[0]["side"] == "X"
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_refresh_returns_empty_on_empty_board(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.board.reset(3)
+        pl = engine.engine.state
+        engine._refresh_line_view(pl)
+        assert pl.live_line_contributions == []
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_start_game_clears_live_lines(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        pl = engine.engine.state
+        # Seed a stale value.
+        pl.live_line_contributions = [{"cells": [(0, 0)], "side": "X",
+                                        "base": 5, "modifiers": [],
+                                        "wildcard": False,
+                                        "contribution": 5}]
+        engine.start_game()
+        assert pl.live_line_contributions == []
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_runstate_default_is_empty(self, mc, mm, mi):
+        from game.player import RunState
+        rs = RunState()
+        assert rs.live_line_contributions == []

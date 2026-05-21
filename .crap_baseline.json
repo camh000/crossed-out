@@ -5,6 +5,5 @@
   "main.py:_place_player_mark": 194.7,
   "main.py:handle_motion": 60.7,
   "main.py:run": 49.3,
-  "systems/cardsystem.py:line_contributions": 238.0,
-  "systems/cardsystem.py:score_breakdown": 189.5
+  "systems/cardsystem.py:line_contributions": 42.0
 }

@@ -265,70 +265,72 @@ class CardSystem:
             level=level,
         )
         ink = sum(c["contribution"] for c in contribs)
-
-        # Gambit — flat -5 ink penalty at scoring time. Pairs with the
-        # per-line +50% bonus applied in line_contributions, so the
-        # break-even is small lines and the upside scales with big ones.
-        if player.upgrades.get("gambit", 0) > 0 and contribs:
-            ink -= 5 * player.upgrades.get("gambit", 0)
-
-        # Quartet — owning ≥4 distinct buff jokers doubles ink.
-        quartet = player.upgrades.get("quartet", 0)
-        if quartet > 0 and len({n for n in player.passive_cards}) >= 4:
-            ink *= 2
-
-        # Last Stand — when down to your final life, +50% ink (per copy).
-        last_stand = player.upgrades.get("last_stand", 0)
-        if last_stand > 0 and lives <= 1:
-            ink = int(ink * (1.0 + 0.5 * last_stand))
-
-        # Board Control floor — each copy adds size*size to a lower bound.
-        bc = player.upgrades.get("board_control", 0)
-        if bc > 0:
-            min_ink = bc * board.size * board.size
-            ink = max(ink, min_ink)
-
-        # Final Count doubles ink in boss games, stacking multiplicatively.
-        if is_boss:
-            final_count_stacks = player.upgrades.get("final_count", 0)
-            if final_count_stacks > 0:
-                ink *= 2 ** final_count_stacks
-
-        # Plague Doctor boss — halve ink across the board.
-        if is_boss and boss_mechanic == "plague_doctor":
-            ink //= 2
-
-        # Multiplicative component.
-        mult = 1.0 + max(0, level_mult - 1)
-        x_lines_for_diag = [c["cells"] for c in contribs if c["side"] == "X"]
-        diag_stacks = player.upgrades.get("diagonal_power", 0)
-        if diag_stacks > 0 and any(self._is_diagonal(board, cells) for cells in x_lines_for_diag):
-            mult += 0.5 * diag_stacks
-        # Crescendo — Mult +0.2 per X line scored this game (cumulative
-        # across the run between cleanups). Read off the upgrade counter
-        # that evaluate_and_settle bumps when this game's lines settle.
-        crescendo = player.upgrades.get("crescendo", 0)
-        if crescendo > 0:
-            mult += 0.2 * crescendo * player.upgrades.get("lines_scored", 0)
-        # Magnitude — Mult +1 when board has grown past the 5x5 base.
-        magnitude = player.upgrades.get("magnitude", 0)
-        if magnitude > 0 and max(board.rows, board.cols) > 5:
-            mult += magnitude
-        # Lethal — Mult +0.5 on boss games.
-        lethal = player.upgrades.get("lethal", 0)
-        if lethal > 0 and is_boss:
-            mult += 0.5 * lethal
-        # War Machine — if ≥3 O's destroyed this game, double Mult per
-        # copy. Stacking is exponential (×2 / ×4 / ×8) to match the
-        # Final Count pattern — a flat 2*stacks would feel weak vs
-        # other "doubling" buffs in the pool.
-        war_machine = player.upgrades.get("war_machine", 0)
-        if war_machine > 0 and player.upgrades.get("os_destroyed", 0) >= 3:
-            mult *= 2 ** war_machine
-
+        ink = self._apply_ink_buffs(
+            ink, board, player, contribs,
+            is_boss=is_boss, boss_mechanic=boss_mechanic, lives=lives,
+        )
+        mult = self._apply_mult_buffs(
+            board, player, contribs, level_mult, is_boss=is_boss,
+        )
         if ink <= 0:
             return 0, mult, 0
         return int(ink), mult, int(ink * mult)
+
+    def _apply_ink_buffs(
+        self, ink: int, board, player: Player, contribs: list, *,
+        is_boss: bool, boss_mechanic: str | None, lives: int,
+    ) -> int:
+        """Aggregate ink modifiers applied after summing per-line
+        contributions. Order: Gambit penalty → Quartet → Last Stand →
+        Board Control floor → Final Count → Plague Doctor halving."""
+        gambit = player.upgrades.get("gambit", 0)
+        if gambit > 0 and contribs:
+            ink -= 5 * gambit
+        quartet = player.upgrades.get("quartet", 0)
+        if quartet > 0 and len({n for n in player.passive_cards}) >= 4:
+            ink *= 2
+        last_stand = player.upgrades.get("last_stand", 0)
+        if last_stand > 0 and lives <= 1:
+            ink = int(ink * (1.0 + 0.5 * last_stand))
+        bc = player.upgrades.get("board_control", 0)
+        if bc > 0:
+            ink = max(ink, bc * board.size * board.size)
+        if is_boss:
+            final_count = player.upgrades.get("final_count", 0)
+            if final_count > 0:
+                ink *= 2 ** final_count
+        if is_boss and boss_mechanic == "plague_doctor":
+            ink //= 2
+        return ink
+
+    def _apply_mult_buffs(
+        self, board, player: Player, contribs: list, level_mult: int, *,
+        is_boss: bool,
+    ) -> float:
+        """Build the multiplicative Mult component: base from level,
+        plus Diagonal Power, Crescendo, Magnitude, Lethal, and War
+        Machine."""
+        mult = 1.0 + max(0, level_mult - 1)
+        x_cells = [c["cells"] for c in contribs if c["side"] == "X"]
+        diag = player.upgrades.get("diagonal_power", 0)
+        if diag > 0 and any(self._is_diagonal(board, cells) for cells in x_cells):
+            mult += 0.5 * diag
+        crescendo = player.upgrades.get("crescendo", 0)
+        if crescendo > 0:
+            mult += 0.2 * crescendo * player.upgrades.get("lines_scored", 0)
+        magnitude = player.upgrades.get("magnitude", 0)
+        if magnitude > 0 and max(board.rows, board.cols) > 5:
+            mult += magnitude
+        lethal = player.upgrades.get("lethal", 0)
+        if lethal > 0 and is_boss:
+            mult += 0.5 * lethal
+        war_machine = player.upgrades.get("war_machine", 0)
+        if (
+            war_machine > 0
+            and player.upgrades.get("os_destroyed", 0) >= 3
+        ):
+            mult *= 2 ** war_machine
+        return mult
 
     def calculate_score(self, board, player: Player, multiplier: int) -> int:
         """Back-compat shim: return just the total. Most callers want this."""
@@ -346,177 +348,278 @@ class CardSystem:
         centre: tuple[int, int] | None = None,
         level: int = 1,
     ) -> list[dict]:
-        """Per-line breakdown of how each completed line contributes to the
-        final ink. Used by the result panel to show 'where did the score
-        come from'. Returns a list of dicts:
-
-            {
-                "cells": [(r, c), ...],   # cells in this line
-                "side": "X" | "O",          # whose mark forms it
-                "wildcard": bool,           # generated by the Wildcard buff
-                "base": int,                # raw line ink (weight_sum × len)
-                "modifiers": list[(label, int)],  # per-line additive bonuses
-                "contribution": int,        # signed contribution to ink
-            }
-        """
+        """Per-line breakdown of how each completed line contributes to
+        the final ink. Used by the result panel to show 'where did the
+        score come from'. Returns a list of dicts with keys: cells,
+        side, wildcard, base, modifiers, contribution."""
+        ctx = self._build_line_ctx(
+            board, player,
+            is_boss=is_boss,
+            boss_mechanic=boss_mechanic,
+            spotlight_zone=spotlight_zone,
+            centre=centre,
+            level=level,
+        )
         contribs: list[dict] = []
-
-        x_lines = self._collect_lines(board, PLAYER_X)
-        wildcard_marker: set[tuple] = set()
-        wildcard_stacks = player.upgrades.get("wildcard", 0)
-        if wildcard_stacks > 0:
-            wc = self._wildcard_lines(board, wildcard_stacks)
-            for cells in wc:
-                wildcard_marker.add(tuple(sorted(cells)))
-            x_lines += wc
-        o_lines = self._collect_lines(board, OPPONENT_O)
-        blind_marks = set(player.blind_shot_marks)
-        point_mult_stacks = player.upgrades.get("point_mult", 0)
-        deep_grid_stacks = player.upgrades.get("deep_grid", 0)
-        double_cross = is_boss and boss_mechanic == "doublecross"
-
-        edge_lord_stacks = player.upgrades.get("edge_lord", 0)
-        centripetal_stacks = player.upgrades.get("centripetal", 0)
-        long_bow_stacks = player.upgrades.get("long_bow", 0)
-        first_x_done = player.upgrades.get("first_x_line_done", 0)
-        first_strike_stacks = player.upgrades.get("first_strike", 0)
-        rich_vein = player.upgrades.get("rich_vein", 0)
-        joker_diversity = len({n for n in player.passive_cards})
-        counter_bonus = player.upgrades.get("counter_bonus_ink", 0)
-        echo_chamber = player.upgrades.get("echo_chamber", 0)
-        gambit = player.upgrades.get("gambit", 0)
-        last_word = player.upgrades.get("last_word", 0)
-        cardinal = player.upgrades.get("cardinal", 0)
-        last_x_cell = player.last_x_cell
-
-        rmin = min((rr for (rr, _) in board.valid_cells), default=0)
-        rmax = max((rr for (rr, _) in board.valid_cells), default=0)
-        cmin = min((cc for (_, cc) in board.valid_cells), default=0)
-        cmax = max((cc for (_, cc) in board.valid_cells), default=0)
-        if centre is None:
-            # Centripetal / centre-bonus checks default to the geometric
-            # centre of the playable region. The Inverse boss passes its
-            # own explicit centre, but otherwise we infer.
-            centre = ((rmin + rmax) // 2, (cmin + cmax) // 2)
-
-        def _on_edge(line) -> bool:
-            return all(
-                r in (rmin, rmax) or c in (cmin, cmax) for (r, c) in line
-            )
-
-        def _through_centre(line) -> bool:
-            if centre is None:
-                return False
-            return centre in line
-
-        def _in_spotlight(line) -> bool:
-            if spotlight_zone is None:
-                return True
-            ar, ac = spotlight_zone
-            return all(ar <= r <= ar + 2 and ac <= c <= ac + 2 for (r, c) in line)
-
-        for cells in x_lines:
-            # Spotlight boss: lines outside the zone score nothing.
-            if boss_mechanic == "spotlight" and not _in_spotlight(cells):
+        for cells in ctx["x_lines"]:
+            if boss_mechanic == "spotlight" \
+                    and not self._line_in_spotlight(cells, ctx):
                 continue
             base = self._line_base_ink(board, cells)
             mods: list[tuple[str, int]] = []
-            line_ink = base
-            if any(cell in blind_marks for cell in cells):
-                mods.append(("Blind Shot x2", base))
-                line_ink *= 2
-            if point_mult_stacks > 0:
-                pm = point_mult_stacks * 3
-                mods.append((f"Point Mult x{point_mult_stacks}", pm))
-                line_ink += pm
-            if deep_grid_stacks > 0:
-                mods.append((f"Deep Grid x{deep_grid_stacks}", deep_grid_stacks))
-                line_ink += deep_grid_stacks
-            if edge_lord_stacks > 0 and _on_edge(cells):
-                bonus = (line_ink * edge_lord_stacks) // 2
-                mods.append((f"Edge Lord +{50 * edge_lord_stacks}%", bonus))
-                line_ink += bonus
-            if centripetal_stacks > 0 and _through_centre(cells):
-                bonus = 5 * centripetal_stacks
-                mods.append((f"Centripetal x{centripetal_stacks}", bonus))
-                line_ink += bonus
-            if long_bow_stacks > 0 and len(cells) == board.size:
-                # On a grown board, lines longer than base size exist too —
-                # this rewards staying at the original size.
-                if (rmax - rmin + 1) > board.size or (cmax - cmin + 1) > board.size:
-                    mods.append((f"Long Bow x{long_bow_stacks}", line_ink * long_bow_stacks))
-                    line_ink += line_ink * long_bow_stacks
-            if first_strike_stacks > 0 and not first_x_done:
-                bonus = 20 * first_strike_stacks
-                mods.append((f"First Strike +{bonus}", bonus))
-                line_ink += bonus
-                first_x_done = 1  # only the very first line gets it
-            if rich_vein > 0 and joker_diversity >= 3:
-                mods.append((f"Rich Vein +{10 * rich_vein}", 10 * rich_vein))
-                line_ink += 10 * rich_vein
-            if counter_bonus > 0:
-                mods.append((f"Counter +{counter_bonus}", counter_bonus))
-                line_ink += counter_bonus
-                counter_bonus = 0  # one-shot
-            # Last Word — the line containing your most-recent X gets
-            # a flat +25 ink, per copy.
-            if last_word > 0 and last_x_cell is not None and last_x_cell in cells:
-                bonus = 25 * last_word
-                mods.append((f"Last Word +{bonus}", bonus))
-                line_ink += bonus
-            # Cardinal — lines along row N or column N (N = current
-            # level number) score +100% per copy. Cells are checked for
-            # uniformity along one axis matching the level.
-            if cardinal > 0:
-                rows_in_line = {r for (r, _) in cells}
-                cols_in_line = {c for (_, c) in cells}
-                if (len(rows_in_line) == 1 and level in rows_in_line) or \
-                   (len(cols_in_line) == 1 and level in cols_in_line):
-                    bonus = line_ink * cardinal
-                    mods.append((f"Cardinal +{100 * cardinal}%", bonus))
-                    line_ink += bonus
-            # Gambit — every X line scores +50% per copy. Pairs with the
-            # flat -5 ink penalty applied in score_breakdown.
-            if gambit > 0:
-                bonus = (line_ink * gambit) // 2
-                mods.append((f"Gambit +{50 * gambit}%", bonus))
-                line_ink += bonus
-            # Echo Chamber — every completed X line scores twice per
-            # copy. Applied last so it amplifies everything above.
-            if echo_chamber > 0:
-                mult_factor = 2 ** echo_chamber
-                extra = line_ink * (mult_factor - 1)
-                mods.append((f"Echo Chamber x{mult_factor}", extra))
-                line_ink *= mult_factor
-            # Inverse boss: lines through the centre cell score negative.
-            if boss_mechanic == "inverse" and _through_centre(cells):
-                mods.append(("Inverse (centre)", -2 * line_ink))
-                line_ink = -line_ink
+            line_ink = self._score_x_line(board, cells, base, mods, ctx)
             contribs.append({
                 "cells": list(cells),
                 "side": "X",
-                "wildcard": tuple(sorted(cells)) in wildcard_marker,
+                "wildcard": tuple(sorted(cells)) in ctx["wildcard_marker"],
                 "base": base,
                 "modifiers": mods,
                 "contribution": line_ink,
             })
 
-        for cells in o_lines:
-            # Spotlight boss zeroes lines outside the zone.
-            if boss_mechanic == "spotlight" and not _in_spotlight(cells):
+        for cells in ctx["o_lines"]:
+            if boss_mechanic == "spotlight" \
+                    and not self._line_in_spotlight(cells, ctx):
                 continue
             base = self._line_base_ink(board, cells)
-            sign = 1 if double_cross else -1
+            sign = 1 if ctx["double_cross"] else -1
             contribs.append({
                 "cells": list(cells),
                 "side": "O",
                 "wildcard": False,
                 "base": base,
-                "modifiers": [("Double Cross +", base)] if double_cross else [],
+                "modifiers": (
+                    [("Double Cross +", base)] if ctx["double_cross"] else []
+                ),
                 "contribution": sign * base,
             })
 
         return contribs
+
+    def _build_line_ctx(
+        self, board, player: Player, *,
+        is_boss: bool, boss_mechanic: str | None,
+        spotlight_zone: tuple[int, int] | None,
+        centre: tuple[int, int] | None,
+        level: int,
+    ) -> dict:
+        """Precompute everything the per-line scorers need: collected
+        X / O lines, wildcard tagging, bounds, centre, spotlight zone.
+        Returns a dict — `dataclass` would work but adds boilerplate
+        for what's essentially a context bag. The geometric predicates
+        (`_line_on_edge`, `_line_through_centre`, `_line_in_spotlight`)
+        are methods on CardSystem that read these bounds back out."""
+        x_lines = self._collect_lines_with_wildcard(board, player)
+        rmin, rmax, cmin, cmax = self._board_bounds(board)
+        if centre is None:
+            centre = ((rmin + rmax) // 2, (cmin + cmax) // 2)
+        return {
+            "board": board,
+            "player": player,
+            "x_lines": x_lines,
+            "o_lines": self._collect_lines(board, OPPONENT_O),
+            "wildcard_marker": self._wildcard_marker(board, player),
+            "blind_marks": set(player.blind_shot_marks),
+            "double_cross": is_boss and boss_mechanic == "doublecross",
+            "boss_mechanic": boss_mechanic,
+            "level": level,
+            "joker_diversity": len({n for n in player.passive_cards}),
+            "rmin": rmin, "rmax": rmax,
+            "cmin": cmin, "cmax": cmax,
+            "centre": centre,
+            "spotlight_zone": spotlight_zone,
+            # Mutable state — the first X line consumes Counter +
+            # First Strike.
+            "counter_bonus_remaining": player.upgrades.get(
+                "counter_bonus_ink", 0,
+            ),
+            "first_x_done": player.upgrades.get("first_x_line_done", 0),
+        }
+
+    @staticmethod
+    def _board_bounds(board) -> tuple[int, int, int, int]:
+        rmin = min((rr for (rr, _) in board.valid_cells), default=0)
+        rmax = max((rr for (rr, _) in board.valid_cells), default=0)
+        cmin = min((cc for (_, cc) in board.valid_cells), default=0)
+        cmax = max((cc for (_, cc) in board.valid_cells), default=0)
+        return rmin, rmax, cmin, cmax
+
+    def _wildcard_marker(self, board, player: Player) -> set[tuple]:
+        """Set of sorted-cell tuples that are wildcard-generated X
+        lines (used by the result panel to tag them in the breakdown)."""
+        stacks = player.upgrades.get("wildcard", 0)
+        if stacks <= 0:
+            return set()
+        return {tuple(sorted(cells)) for cells in self._wildcard_lines(board, stacks)}
+
+    def _collect_lines_with_wildcard(self, board, player: Player) -> list:
+        """X lines on the board PLUS any Wildcard-generated near-lines."""
+        x_lines = self._collect_lines(board, PLAYER_X)
+        stacks = player.upgrades.get("wildcard", 0)
+        if stacks > 0:
+            x_lines = x_lines + self._wildcard_lines(board, stacks)
+        return x_lines
+
+    @staticmethod
+    def _line_on_edge(cells, ctx) -> bool:
+        rmin, rmax = ctx["rmin"], ctx["rmax"]
+        cmin, cmax = ctx["cmin"], ctx["cmax"]
+        return all(
+            r in (rmin, rmax) or c in (cmin, cmax) for (r, c) in cells
+        )
+
+    @staticmethod
+    def _line_through_centre(cells, ctx) -> bool:
+        centre = ctx["centre"]
+        return centre is not None and centre in cells
+
+    @staticmethod
+    def _line_in_spotlight(cells, ctx) -> bool:
+        sp = ctx["spotlight_zone"]
+        if sp is None:
+            return True
+        ar, ac = sp
+        return all(
+            ar <= r <= ar + 2 and ac <= c <= ac + 2 for (r, c) in cells
+        )
+
+    def _score_x_line(
+        self, board, cells, base: int, mods: list, ctx: dict,
+    ) -> int:
+        """Apply every per-line modifier to an X line in the canonical
+        order (Blind Shot ×2 → flat additives → percentage bonuses →
+        Echo Chamber exponential → Inverse boss negation). Mutates
+        `mods` (appends labels) and `ctx` (consumes one-shot Counter /
+        First Strike). Returns the final line ink."""
+        line_ink = base
+        player = ctx["player"]
+        line_ink = self._apply_blind_shot(line_ink, cells, base, mods, ctx)
+        line_ink = self._apply_flat_x_bonuses(line_ink, mods, player)
+        line_ink = self._apply_geometric_x_bonuses(
+            line_ink, cells, mods, ctx,
+        )
+        line_ink = self._apply_one_shot_x_bonuses(
+            line_ink, cells, mods, ctx,
+        )
+        line_ink = self._apply_late_x_bonuses(line_ink, cells, mods, ctx)
+        if ctx["boss_mechanic"] == "inverse" and self._line_through_centre(cells, ctx):
+            mods.append(("Inverse (centre)", -2 * line_ink))
+            line_ink = -line_ink
+        return line_ink
+
+    def _apply_blind_shot(
+        self, line_ink: int, cells, base: int, mods: list, ctx: dict,
+    ) -> int:
+        if any(cell in ctx["blind_marks"] for cell in cells):
+            mods.append(("Blind Shot x2", base))
+            line_ink *= 2
+        return line_ink
+
+    def _apply_flat_x_bonuses(
+        self, line_ink: int, mods: list, player: Player,
+    ) -> int:
+        """Point Multiplier + Deep Grid — both flat additives applied
+        before any percentage scaling."""
+        pm_stacks = player.upgrades.get("point_mult", 0)
+        if pm_stacks > 0:
+            pm = pm_stacks * 3
+            mods.append((f"Point Mult x{pm_stacks}", pm))
+            line_ink += pm
+        dg_stacks = player.upgrades.get("deep_grid", 0)
+        if dg_stacks > 0:
+            mods.append((f"Deep Grid x{dg_stacks}", dg_stacks))
+            line_ink += dg_stacks
+        return line_ink
+
+    def _apply_geometric_x_bonuses(
+        self, line_ink: int, cells, mods: list, ctx: dict,
+    ) -> int:
+        """Edge Lord (edge), Centripetal (centre), Long Bow (grown
+        board at base size)."""
+        player = ctx["player"]
+        edge_lord = player.upgrades.get("edge_lord", 0)
+        if edge_lord > 0 and self._line_on_edge(cells, ctx):
+            bonus = (line_ink * edge_lord) // 2
+            mods.append((f"Edge Lord +{50 * edge_lord}%", bonus))
+            line_ink += bonus
+        centripetal = player.upgrades.get("centripetal", 0)
+        if centripetal > 0 and self._line_through_centre(cells, ctx):
+            bonus = 5 * centripetal
+            mods.append((f"Centripetal x{centripetal}", bonus))
+            line_ink += bonus
+        long_bow = player.upgrades.get("long_bow", 0)
+        board = ctx["board"]
+        if long_bow > 0 and len(cells) == board.size:
+            if (
+                (ctx["rmax"] - ctx["rmin"] + 1) > board.size
+                or (ctx["cmax"] - ctx["cmin"] + 1) > board.size
+            ):
+                mods.append(
+                    (f"Long Bow x{long_bow}", line_ink * long_bow),
+                )
+                line_ink += line_ink * long_bow
+        return line_ink
+
+    def _apply_one_shot_x_bonuses(
+        self, line_ink: int, cells, mods: list, ctx: dict,
+    ) -> int:
+        """First Strike (first X line per game) + Counter (consumed
+        on the next X line after an AI move). Also Rich Vein (no
+        one-shot but per-line). Mutates ctx."""
+        player = ctx["player"]
+        rich_vein = player.upgrades.get("rich_vein", 0)
+        if rich_vein > 0 and ctx["joker_diversity"] >= 3:
+            mods.append((f"Rich Vein +{10 * rich_vein}", 10 * rich_vein))
+            line_ink += 10 * rich_vein
+        first_strike = player.upgrades.get("first_strike", 0)
+        if first_strike > 0 and not ctx["first_x_done"]:
+            bonus = 20 * first_strike
+            mods.append((f"First Strike +{bonus}", bonus))
+            line_ink += bonus
+            ctx["first_x_done"] = 1
+        counter_bonus = ctx["counter_bonus_remaining"]
+        if counter_bonus > 0:
+            mods.append((f"Counter +{counter_bonus}", counter_bonus))
+            line_ink += counter_bonus
+            ctx["counter_bonus_remaining"] = 0
+        return line_ink
+
+    def _apply_late_x_bonuses(
+        self, line_ink: int, cells, mods: list, ctx: dict,
+    ) -> int:
+        """Last Word, Cardinal, Gambit, Echo Chamber — applied LAST so
+        they multiply the accumulated ink, not the bare base."""
+        player = ctx["player"]
+        last_word = player.upgrades.get("last_word", 0)
+        if last_word > 0 and player.last_x_cell is not None \
+                and player.last_x_cell in cells:
+            bonus = 25 * last_word
+            mods.append((f"Last Word +{bonus}", bonus))
+            line_ink += bonus
+        cardinal = player.upgrades.get("cardinal", 0)
+        if cardinal > 0:
+            rows_in_line = {r for (r, _) in cells}
+            cols_in_line = {c for (_, c) in cells}
+            level = ctx["level"]
+            if (
+                (len(rows_in_line) == 1 and level in rows_in_line)
+                or (len(cols_in_line) == 1 and level in cols_in_line)
+            ):
+                bonus = line_ink * cardinal
+                mods.append((f"Cardinal +{100 * cardinal}%", bonus))
+                line_ink += bonus
+        gambit = player.upgrades.get("gambit", 0)
+        if gambit > 0:
+            bonus = (line_ink * gambit) // 2
+            mods.append((f"Gambit +{50 * gambit}%", bonus))
+            line_ink += bonus
+        echo_chamber = player.upgrades.get("echo_chamber", 0)
+        if echo_chamber > 0:
+            mult_factor = 2 ** echo_chamber
+            extra = line_ink * (mult_factor - 1)
+            mods.append((f"Echo Chamber x{mult_factor}", extra))
+            line_ink *= mult_factor
+        return line_ink
 
     def _collect_lines(self, board, val: int) -> list[list[tuple[int, int]]]:
         return [cells for v, cells in board.get_lines() if v == val]

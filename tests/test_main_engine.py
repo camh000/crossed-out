@@ -2261,6 +2261,45 @@ class TestVandalStrike:
         )
         assert before - after == 1
 
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_post_move_throttles_to_every_third_ai_move(self, mc, mm, mi):
+        """`_apply_post_move_mechanics` on the Vandal boss only fires
+        `_vandal_strike` every 3rd AI move — not every move. The
+        every-AI-move original was uncounterable on big grids."""
+        from main import GameEngine
+        from game.board import PLAYER_X
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        engine.board.reset(5)
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["vandal"]
+        # Five interior X's so strikes have plenty of targets.
+        for (r, c) in [(1, 1), (1, 2), (2, 1), (2, 3), (3, 2)]:
+            engine.board.grid[r][c] = PLAYER_X
+        def x_count():
+            return sum(
+                1 for r in range(5) for c in range(5)
+                if engine.board.grid[r][c] == PLAYER_X
+            )
+        # AI move 1 → counter=1 → no strike.
+        engine._apply_post_move_mechanics(pl)
+        assert x_count() == 5
+        # AI move 2 → counter=2 → no strike.
+        engine._apply_post_move_mechanics(pl)
+        assert x_count() == 5
+        # AI move 3 → counter=3 → strike fires.
+        engine._apply_post_move_mechanics(pl)
+        assert x_count() == 4
+        # AI move 4-5 → quiet, AI move 6 → strike.
+        engine._apply_post_move_mechanics(pl)
+        engine._apply_post_move_mechanics(pl)
+        assert x_count() == 4
+        engine._apply_post_move_mechanics(pl)
+        assert x_count() == 3
+
 
 class TestTideTick:
     """`_tide_tick` walks `_tide_clear_deadlines` and clears any cells

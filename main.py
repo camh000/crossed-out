@@ -264,6 +264,7 @@ class GameEngine:
         pl = self.engine.state
         pl.player.upgrades.pop("hourglass_counter", None)
         pl.player.upgrades.pop("carto_moves", None)
+        pl.player.upgrades.pop("vandal_counter", None)
         self._hot_potato_cell = None
         if bm != "spotlight":
             self._spotlight_anchor = None
@@ -456,7 +457,14 @@ class GameEngine:
             return
         bm = pl.current_boss.mechanic
         if bm == "vandal":
-            self._vandal_strike()
+            # Throttle: erase a random interior X every 3rd AI move so
+            # the player gets a window to build pairs between strikes.
+            # The "every-AI-move" original made interior placement
+            # almost worthless on a big grid.
+            counter = pl.player.upgrades.get("vandal_counter", 0) + 1
+            pl.player.upgrades["vandal_counter"] = counter
+            if counter % 3 == 0:
+                self._vandal_strike()
         elif bm == "hourglass":
             counter = pl.player.upgrades.get("hourglass_counter", 0) + 1
             pl.player.upgrades["hourglass_counter"] = counter

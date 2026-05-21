@@ -92,7 +92,7 @@ BOSS_LIST: list[BossDef] = [
     BossDef(
         "The Vandal",
         "Marks vanish.",
-        "After every AI move, one random non-edge X cell on the board is erased.",
+        "Every third AI move, one random non-edge X cell is erased. Stack X's on the edges or play them in pairs so a strike doesn't break a line.",
         "vandal",
     ),
     BossDef(

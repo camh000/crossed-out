@@ -33,10 +33,26 @@ class TestMainEngineRun:
     def test_new_run(self, mock_caption, mock_mode, mock_init):
         from main import GameEngine
         engine = GameEngine()
-        with patch('main.get_unlocked_cards', return_value=[]):
+        # Skip the first-run intro by claiming it's already been seen.
+        with patch('main.get_unlocked_cards', return_value=[]), \
+             patch('main.is_intro_seen', return_value=True):
             engine.new_run()
         assert engine.state == "transition"
         assert len(engine.starter_cards) == 3
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_new_run_first_ever_routes_to_intro(self, mock_caption, mock_mode, mock_init):
+        """First-ever run shows the tutorial overlay instead of going
+        straight to the starter-glyph picker."""
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]), \
+             patch('main.is_intro_seen', return_value=False):
+            engine.new_run()
+        assert engine.state == "intro"
+        assert engine._intro_step == 0
 
     @patch('pygame.init')
     @patch('pygame.display.set_mode')
@@ -46,7 +62,8 @@ class TestMainEngineRun:
         one before the first game starts."""
         from main import GameEngine
         engine = GameEngine()
-        with patch('main.get_unlocked_cards', return_value=[]):
+        with patch('main.get_unlocked_cards', return_value=[]), \
+             patch('main.is_intro_seen', return_value=True):
             engine.new_run()
         assert engine.engine.state.player.passive_cards == []
 
@@ -179,7 +196,8 @@ class TestEvaluateSettle:
         pl.player.score = 1
         pl.score_this_level = 0
         pl.current_target = 1
-        engine.engine.card_system.calculate_score = MagicMock(return_value=6)
+        # card_system lives on the GameEngine, not on RogueliteEngine.
+        engine.card_system.calculate_score = MagicMock(return_value=6)
         result = engine._boss_outcome()
         assert result in ("win", "lose", "draw")
 
@@ -891,20 +909,20 @@ class TestLevelScoreResets:
         assert rs.score_this_level == 0
         assert rs.level == 2
 
-    def test_level3_win_check_uses_pre_increment_target(self):
-        """Beating level 3 with cumulative ink ≥ that level's target should
-        register as a run win. The check must happen BEFORE level += 1, or
-        get_target() would compare against the clamped final value."""
+    def test_final_level_win_check_uses_pre_increment_target(self):
+        """Beating the final base level with cumulative ink ≥ target
+        should register as a run win. The check must happen BEFORE
+        level += 1, or get_target() would jump to the endless formula."""
         from game.player import RunState
-        rs = RunState(level=3)
-        rs.score_this_level = rs.get_target()  # exactly hit
+        rs = RunState(level=7)
+        rs.score_this_level = rs.get_target()
         rs.next_level()
         assert rs.run_complete is True
         assert rs.won_run is True
 
-    def test_level3_miss_check_fails_run(self):
+    def test_final_level_miss_check_fails_run(self):
         from game.player import RunState
-        rs = RunState(level=3)
+        rs = RunState(level=7)
         rs.score_this_level = rs.get_target() - 1
         rs.next_level()
         assert rs.run_complete is True
@@ -1443,6 +1461,107 @@ class TestCodex:
         engine._inspecting_joker = "Point Multiplier"
         assert engine._inspecting_joker == "Point Multiplier"
 
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_codex_has_rules_tab(self, mock_caption, mock_mode, mock_init):
+        """Third tab (RULES) renders no chips but is a valid tab."""
+        from main import GameEngine
+        engine = GameEngine()
+        engine.state = "codex"
+        engine._codex_tab = "rules"
+        layout = engine._codex_layout()
+        assert "tab_rules" in layout
+        # RULES tab has no chips — it's a static info panel.
+        assert layout["chips"] == []
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_open_help_pushes_into_codex_rules(self, mock_caption, mock_mode, mock_init):
+        """The in-game '?' icon routes into the codex RULES tab with a
+        return-state pointer so BACK comes back to the game."""
+        from main import GameEngine
+        engine = GameEngine()
+        engine.state = "game"
+        engine._open_help()
+        assert engine.state == "codex"
+        assert engine._codex_tab == "rules"
+        assert engine._codex_return_state == "game"
+
+
+class TestIntroOverlay:
+    """First-run tutorial overlay — 3 steps, dismissable with SKIP, and
+    persists intro_seen so it doesn't fire on subsequent runs."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_intro_layout_has_three_buttons(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        layout = engine._intro_layout()
+        assert "back" in layout and "next" in layout and "skip" in layout
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_intro_has_three_steps(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        steps = engine._intro_steps()
+        assert len(steps) == 3
+        # Each step is (heading, body) — both non-empty strings.
+        for heading, body in steps:
+            assert heading and isinstance(heading, str)
+            assert body and isinstance(body, str)
+
+
+class TestRoundLabel:
+    """The top-bar 'Round N / 7' label replaces the old 'Level N' so
+    the player can see how long the run is."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_max_base_level_default(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        # The intro copy and the round label both reference this value.
+        assert engine.engine.state.max_base_level == 7
+
+
+class TestHighScoresRoute:
+    """finish_run records a high-score entry every run. The 'scores'
+    state surfaces them."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_finish_run_records_score(self, mock_caption, mock_mode, mock_init):
+        # Use a fresh-ish save so the record list starts empty.
+        import os
+        save_path = os.path.join(
+            os.path.dirname(__file__), '..', 'crossed_out_save.json',
+        )
+        if os.path.exists(save_path):
+            os.remove(save_path)
+        from main import GameEngine
+        from save.savesetup import load_scores
+        engine = GameEngine()
+        engine.engine.state.total_score = 1234
+        engine.engine.state.level = 5
+        engine.finish_run(won=True)
+        scores = load_scores()
+        assert len(scores) == 1
+        assert scores[0]["total_score"] == 1234
+        assert scores[0]["level_reached"] == 5
+        assert scores[0]["won"] is True
+        # The just-finished entry is remembered for the gold-highlight pass.
+        assert engine._last_score_entry["total_score"] == 1234
+        if os.path.exists(save_path):
+            os.remove(save_path)
+
 
 class TestBlindAI:
     """The AI is symmetrically blind during Blind boss games: it reads
@@ -1481,40 +1600,52 @@ class TestBlindAI:
         ai = OpponentAI(b)  # no fade_age — sees everything
         assert ai.get_best_move() == (0, 2)
 
-    def test_ai_forfeits_when_picking_occupied_faded_cell(self):
+    def test_blind_ai_falls_back_to_truly_empty_cell(self):
         """If the AI's blind perception leads it to pick a cell that's
-        actually occupied (a faded mark), get_best_move returns None
-        instead of a guaranteed-to-fail placement."""
+        actually occupied (a faded mark), get_best_move falls back to
+        a truly-empty cell instead of forfeiting. The AI stays
+        informationally blind but doesn't waste turns."""
         from game.board import Board, PLAYER_X
         from game.opponent import OpponentAI
-        # Fill every cell except one, all aged past the fade threshold.
+        # Fill every cell except (1, 1) with X. fade_age=1 → all
+        # placed cells look empty to the AI.
         b = Board(size=3)
         for r in range(3):
             for c in range(3):
                 if (r, c) != (1, 1):
                     b.place_at(r, c, PLAYER_X)
-        # move_count == 8; oldest cell is age 7. With fade_age=1 every
-        # placed cell is "faded" from the AI's view, so the AI thinks
-        # all of them are EMPTY and may pick any of them.
         ai = OpponentAI(b, fade_age=1)
-        # Force the perceived view to a known state where the AI picks
-        # a truly-occupied cell — by seeding random it'll choose from
-        # the perceived-empty set which includes everything but is
-        # mostly real-occupied.
         import random
-        # Try several seeds — at least one should land on a real-occupied
-        # cell and return None.
-        forfeited = False
+        # Across many seeds, the AI must always either pick (1, 1) (the
+        # only truly-empty cell) or fall back to it — never forfeit.
         for seed in range(32):
             random.seed(seed)
             m = ai.get_best_move()
-            # The AI's choice is either the truly-empty (1,1) or None
-            # (forfeit). It should never name a real-occupied cell.
-            if m is None:
-                forfeited = True
-            else:
-                assert m == (1, 1)
-        assert forfeited, "AI never forfeited despite perceived-empty cells being real-occupied"
+            assert m == (1, 1), f"seed {seed}: expected fallback to (1,1), got {m}"
+
+    def test_ai_skips_wall_cells(self):
+        """The AI never picks a wall cell, even though walls aren't
+        tracked in board.grid. Fortress / Cell Lock / Ghost Board /
+        Architect / Hourglass all place walls — picking one was a
+        wasted opponent turn that gave the player a free move."""
+        from game.board import Board
+        from game.opponent import OpponentAI
+        b = Board(size=3)
+        # Wall every cell except (1, 1) so the AI is forced to either
+        # pick the wall or the single truly-empty cell.
+        for r in range(3):
+            for c in range(3):
+                if (r, c) != (1, 1):
+                    b.wall_cells.append((r, c))
+        ai = OpponentAI(b)
+        import random
+        for seed in range(32):
+            random.seed(seed)
+            m = ai.get_best_move()
+            # Should always pick (1, 1); never a wall.
+            assert m == (1, 1) or m is None
+            if m is not None:
+                assert m not in b.wall_cells
 
     def test_main_passes_fade_age_for_blind_boss_only(self):
         """The _ai_fade_age helper returns BLIND_FADE_AGE only on Blind
@@ -1548,8 +1679,77 @@ class TestNewBosses:
     def test_all_new_bosses_registered(self, mock_caption, mock_mode, mock_init):
         from config.bosses import BOSS_MAP
         for key in ("tide", "echo", "spotlight", "inverse", "taxman",
-                    "vandal", "twins", "hourglass", "quicksand", "hivemind"):
+                    "vandal", "twins", "hourglass", "quicksand", "hivemind",
+                    "cartographer", "architect",
+                    "plague_doctor", "hot_potato"):
             assert key in BOSS_MAP, f"{key} boss missing"
+        # Two-Headed was a verbatim duplicate of Twins and has been cut.
+        assert "two_headed" not in BOSS_MAP
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_plague_doctor_halves_ink(self, mock_caption, mock_mode, mock_init):
+        from systems.cardsystem import CardSystem
+        from game.board import Board, PLAYER_X
+        from game.player import Player
+        cs = CardSystem()
+        player = Player()
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        plain_ink, _, _ = cs.score_breakdown(board, player, 1, is_boss=True)
+        plague_ink, _, _ = cs.score_breakdown(
+            board, player, 1, is_boss=True, boss_mechanic="plague_doctor",
+        )
+        assert plague_ink == plain_ink // 2
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_architect_walls_at_game_start(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]):
+            engine.new_run()
+        # Force a 9x9 board (level 5) so Architect has room.
+        engine.engine.state.level = 5
+        engine.board.reset(9)
+        engine._architect_walls()
+        # Walls land inset 1 from the edges, with gaps at the centre row/col.
+        assert any((r, c) in engine.board.wall_cells for r in (1, 7) for c in range(1, 8))
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_cartographer_swap_preserves_marks(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        engine = GameEngine()
+        engine.board.reset(3)
+        engine.board.place_at(0, 0, PLAYER_X)
+        engine.board.place_at(2, 2, OPPONENT_O)
+        before = sum(1 for r in range(3) for c in range(3) if engine.board.grid[r][c] != 0)
+        import random
+        random.seed(0)
+        engine._cartographer_swap()
+        after = sum(1 for r in range(3) for c in range(3) if engine.board.grid[r][c] != 0)
+        assert after == before  # marks count unchanged; only positions swap
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_hot_potato_rotates_lit_cell(self, mock_caption, mock_mode, mock_init):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.board.reset(3)
+        seen = set()
+        import random
+        for seed in range(32):
+            random.seed(seed)
+            engine._hot_potato_rotate()
+            if engine._hot_potato_cell is not None:
+                seen.add(engine._hot_potato_cell)
+        assert len(seen) > 1
 
     @patch('pygame.init')
     @patch('pygame.display.set_mode')
@@ -1612,3 +1812,474 @@ class TestNewBosses:
         engine._spotlight_anchor = (2, 2)
         result = engine.evaluate_and_settle()
         assert pl.last_ink == 0  # line is outside the spotlight
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_ghost_places_one_wall_on_boss_start(self, mock_caption, mock_mode, mock_init):
+        """The Ghost boss's setup branch drops exactly one wall cell."""
+        from main import GameEngine
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[], create=True), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        pl = engine.engine.state
+        # Force a boss game next, with Ghost as the picked mechanic.
+        pl.games_in_level = 2
+        pl.boss_order = ["ghost_wall"]
+        pl.boss_index = 0
+        engine.start_game()
+        assert pl.current_boss is not None
+        assert pl.current_boss.mechanic == "ghost_wall"
+        assert len(engine.board.wall_cells) == 1
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_mirror_player_alternates_x_and_o(self, mock_caption, mock_mode, mock_init):
+        """On Mirror, two consecutive player clicks place X then O."""
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[], create=True), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        engine.start_game()
+        engine.state = "game"
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["mirror"]
+        engine._mirror_player_o = False
+        avail, off_x, off_y = engine._board_layout()
+        # First click → X
+        mx = off_x + 0 * avail + avail // 2
+        my = off_y + 0 * avail + avail // 2
+        engine.handle_click(mx, my, 1)
+        assert engine.board.grid[0][0] == PLAYER_X
+        # Second click → O (no AI move happened in between)
+        mx = off_x + 1 * avail + avail // 2
+        my = off_y + 0 * avail + avail // 2
+        engine.handle_click(mx, my, 1)
+        assert engine.board.grid[0][1] == OPPONENT_O
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_mirror_does_not_schedule_ai_move(self, mock_caption, mock_mode, mock_init):
+        """The AI never moves on Mirror — _ai_move_at stays None."""
+        from main import GameEngine
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[], create=True), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        engine.start_game()
+        engine.state = "game"
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["mirror"]
+        engine._mirror_player_o = False
+        avail, off_x, off_y = engine._board_layout()
+        mx = off_x + 0 * avail + avail // 2
+        my = off_y + 0 * avail + avail // 2
+        engine.handle_click(mx, my, 1)
+        assert engine._ai_move_at is None
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_echo_mirrors_player_x_across_centre(self, mock_caption, mock_mode, mock_init):
+        """Echo boss: an X at (0, 0) on a 5x5 board drops an O at (4, 4)."""
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[], create=True), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        engine.engine.state.level = 2  # 5x5 board
+        engine.start_game()
+        engine.state = "game"
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["echo"]
+        avail, off_x, off_y = engine._board_layout()
+        # Click (0, 0) — Echo should mirror to (4, 4) on a 5x5 board.
+        mx = off_x + 0 * avail + avail // 2
+        my = off_y + 0 * avail + avail // 2
+        engine.handle_click(mx, my, 1)
+        assert engine.board.grid[0][0] == PLAYER_X
+        assert engine.board.grid[4][4] == OPPONENT_O
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_echo_no_longer_in_extras_tuple(self, mock_caption, mock_mode, mock_init):
+        """Echo's response is the centre-mirror, not a generic 'extra AI
+        O' — confirm by checking _tick_ai_move's extras logic. Twins is
+        the only mechanic that should grant extras now."""
+        from main import GameEngine
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[], create=True), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        engine.engine.state.level = 2  # 5x5 board
+        engine.start_game()
+        engine.state = "game"
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["echo"]
+        # Schedule an immediate AI move and tick it. The AI plays a
+        # normal single O — not 2.
+        import pygame as _pg
+        engine._ai_move_at = _pg.time.get_ticks() - 1
+        os_before = sum(
+            1 for r in range(engine.board.rows) for c in range(engine.board.cols)
+            if engine.board.grid[r][c] == -1
+        )
+        engine._tick_ai_move()
+        os_after = sum(
+            1 for r in range(engine.board.rows) for c in range(engine.board.cols)
+            if engine.board.grid[r][c] == -1
+        )
+        # _tick_ai_move on Echo runs the AI exactly once (1 new O).
+        assert os_after - os_before == 1
+
+
+class TestClickHandlerDispatch:
+    """`handle_click` now routes to per-state methods via the
+    `_CLICK_HANDLERS` dispatch table. Pin the table shape so
+    refactors can't silently drop a state, and exercise each
+    handler enough to keep their CRAP under control."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_dispatch_table_covers_every_state(self, mc, mm, mi):
+        from main import GameEngine
+        expected = {
+            "menu", "codex", "scores", "intro", "transition",
+            "boss_intro", "gameover", "game", "shop",
+        }
+        assert set(GameEngine._CLICK_HANDLERS) == expected
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_codex_back_routes_to_menu_by_default(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.state = "codex"
+        layout = engine._codex_layout()
+        engine._click_codex(layout["back"].centerx, layout["back"].centery)
+        assert engine.state == "menu"
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_codex_back_routes_to_return_state(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.state = "codex"
+        engine._codex_return_state = "game"
+        layout = engine._codex_layout()
+        engine._click_codex(layout["back"].centerx, layout["back"].centery)
+        assert engine.state == "game"
+        assert engine._codex_return_state is None
+
+    # Tab switching + chip selection live under the same _click_codex
+    # entry point; they hit `back` first under the conftest pygame
+    # stub (collidepoint always truthy) so they're not testable via
+    # the dispatcher path. The dispatch-table pin + layout pin in
+    # TestCodex cover the shape; coverage will come from a Phase-3
+    # rect-aware fixture if needed.
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_intro_skip_marks_seen_and_transitions(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.state = "intro"
+        engine._intro_step = 1
+        layout = engine._intro_layout()
+        with patch('main.mark_intro_seen') as mocked_mark:
+            engine._click_intro(
+                layout["skip"].centerx, layout["skip"].centery,
+            )
+            mocked_mark.assert_called_once()
+        assert engine.state == "transition"
+
+    # back / next are guarded by `skip` in the rect order — under the
+    # conftest pygame stub `collidepoint` always returns truthy, so
+    # `skip` would fire first regardless. Skip is the most important
+    # path to pin, and it works because it's the first rect checked.
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_shop_card_purchase_consumes_tokens(self, mc, mm, mi):
+        from main import GameEngine
+        from config.constants import SCREEN_W, SCREEN_H, CARD_W
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        engine.do_shop()
+        pl = engine.engine.state
+        pl.player.tokens = 50
+        before_count = len(pl.player.passive_cards)
+        sx = (SCREEN_W
+              - (len(engine.shop_cards) * CARD_W
+                 + max(0, len(engine.shop_cards) - 1) * 12)) // 2
+        cx, cy = sx + CARD_W // 2, SCREEN_H // 2
+        consumed = engine._try_buy_shop_card(cx, cy, pl)
+        assert consumed is True
+        assert len(pl.player.passive_cards) == before_count + 1
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_shop_card_refused_when_at_joker_cap(self, mc, mm, mi):
+        from main import GameEngine
+        from config.constants import SCREEN_W, SCREEN_H, CARD_W
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        engine.do_shop()
+        pl = engine.engine.state
+        pl.player.tokens = 50
+        pl.player.passive_cards = ["Point Multiplier"] * pl.joker_cap
+        sx = (SCREEN_W
+              - (len(engine.shop_cards) * CARD_W
+                 + max(0, len(engine.shop_cards) - 1) * 12)) // 2
+        cx, cy = sx + CARD_W // 2, SCREEN_H // 2
+        consumed = engine._try_buy_shop_card(cx, cy, pl)
+        assert consumed is True  # click consumed (flash fires)
+        assert len(pl.player.passive_cards) == pl.joker_cap
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_shop_card_refused_when_low_tokens(self, mc, mm, mi):
+        from main import GameEngine
+        from config.constants import SCREEN_W, SCREEN_H, CARD_W
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        engine.do_shop()
+        pl = engine.engine.state
+        pl.player.tokens = 0
+        before_count = len(pl.player.passive_cards)
+        sx = (SCREEN_W
+              - (len(engine.shop_cards) * CARD_W
+                 + max(0, len(engine.shop_cards) - 1) * 12)) // 2
+        cx, cy = sx + CARD_W // 2, SCREEN_H // 2
+        engine._try_buy_shop_card(cx, cy, pl)
+        assert len(pl.player.passive_cards) == before_count
+
+
+class TestQuicksandTick:
+    """Direct unit tests for `_quicksand_tick`. The helper iterates the
+    board and erases marks that have been left without a same-side
+    neighbour for >= 3 moves. Tested in isolation — no full-game
+    fixture needed."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_erases_isolated_mark_past_age_threshold(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        # X at (2, 2) placed at move 1; no same-side neighbours.
+        # Advance move_count so the age exceeds 3.
+        engine.board.grid[2][2] = PLAYER_X
+        engine.board.placed_at[2][2] = 1
+        engine.board.move_count = 5
+        engine._quicksand_tick()
+        assert engine.board.grid[2][2] == 0
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_preserves_mark_with_same_neighbour(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        engine.board.grid[2][2] = PLAYER_X
+        engine.board.grid[2][3] = PLAYER_X  # same-side neighbour
+        engine.board.placed_at[2][2] = 1
+        engine.board.placed_at[2][3] = 1
+        engine.board.move_count = 5
+        engine._quicksand_tick()
+        # Both survive — each one is the other's neighbour.
+        assert engine.board.grid[2][2] == PLAYER_X
+        assert engine.board.grid[2][3] == PLAYER_X
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_skips_recently_placed(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        engine.board.grid[2][2] = PLAYER_X
+        engine.board.placed_at[2][2] = 3
+        engine.board.move_count = 4  # age = 1 < 3 → safe
+        engine._quicksand_tick()
+        assert engine.board.grid[2][2] == PLAYER_X
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_empty_cells_untouched(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.board.reset(3)
+        engine.board.move_count = 10
+        engine._quicksand_tick()
+        # No marks → no removals.
+        assert all(
+            engine.board.grid[r][c] == 0 for r in range(3) for c in range(3)
+        )
+
+
+class TestVandalStrike:
+    """Direct unit tests for `_vandal_strike`. Removes one random
+    non-edge X cell per call, or no-ops when none exist."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_removes_interior_x(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        engine.board.grid[2][2] = PLAYER_X  # interior cell
+        engine._vandal_strike()
+        assert engine.board.grid[2][2] == 0
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_skips_edge_x(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        # Only edge X's → vandal has no candidates and no-ops.
+        engine.board.grid[0][0] = PLAYER_X
+        engine.board.grid[0][4] = PLAYER_X
+        engine.board.grid[4][2] = PLAYER_X
+        engine._vandal_strike()
+        assert engine.board.grid[0][0] == PLAYER_X
+        assert engine.board.grid[0][4] == PLAYER_X
+        assert engine.board.grid[4][2] == PLAYER_X
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_no_op_on_empty_board(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.board.reset(5)
+        # No X's at all — no-op, no crash.
+        engine._vandal_strike()
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_removes_exactly_one_per_call(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        for (r, c) in [(1, 1), (1, 2), (2, 1), (2, 3)]:
+            engine.board.grid[r][c] = PLAYER_X
+        before = sum(
+            1 for r in range(5) for c in range(5)
+            if engine.board.grid[r][c] == PLAYER_X
+        )
+        engine._vandal_strike()
+        after = sum(
+            1 for r in range(5) for c in range(5)
+            if engine.board.grid[r][c] == PLAYER_X
+        )
+        assert before - after == 1
+
+
+class TestTideTick:
+    """`_tide_tick` walks `_tide_clear_deadlines` and clears any cells
+    whose deadline has passed (move_count >= when)."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_clears_cells_at_or_past_deadline(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        engine.board.grid[1][0] = PLAYER_X
+        engine.board.grid[1][1] = PLAYER_X
+        engine.board.grid[1][2] = PLAYER_X
+        engine.board.move_count = 10
+        engine._tide_clear_deadlines = [(10, [(1, 0), (1, 1), (1, 2)])]
+        engine._tide_tick()
+        assert engine.board.grid[1][0] == 0
+        assert engine.board.grid[1][1] == 0
+        assert engine.board.grid[1][2] == 0
+        # Deadline consumed.
+        assert engine._tide_clear_deadlines == []
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_keeps_cells_before_deadline(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(5)
+        engine.board.grid[0][0] = PLAYER_X
+        engine.board.move_count = 5
+        engine._tide_clear_deadlines = [(10, [(0, 0)])]
+        engine._tide_tick()
+        # Mark survives; deadline preserved for a later tick.
+        assert engine.board.grid[0][0] == PLAYER_X
+        assert engine._tide_clear_deadlines == [(10, [(0, 0)])]
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_empty_list_noop(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.board.reset(5)
+        engine._tide_clear_deadlines = []
+        engine._tide_tick()  # no crash
+        assert engine._tide_clear_deadlines == []
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_already_cleared_cell_is_skipped(self, mc, mm, mi):
+        """If a scheduled cell is already empty (e.g. cleared by another
+        boss mechanic), the tick must not crash."""
+        from main import GameEngine
+        engine = GameEngine()
+        engine.board.reset(5)
+        # Cell is empty even though it's scheduled.
+        engine.board.move_count = 10
+        engine._tide_clear_deadlines = [(10, [(2, 2)])]
+        engine._tide_tick()
+        assert engine._tide_clear_deadlines == []

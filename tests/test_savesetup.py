@@ -5,7 +5,11 @@ json_path = os.path.join(os.path.dirname(__file__), '..', 'crossed_out_save.json
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import pytest
-from save.savesetup import save_progression, load_progression, get_unlocked_cards
+from save.savesetup import (
+    save_progression, load_progression, get_unlocked_cards,
+    is_intro_seen, mark_intro_seen,
+    record_score, load_scores,
+)
 
 
 class TestSaveProgression:
@@ -156,6 +160,98 @@ class TestCorruptedSave:
         data = load_progression()
         assert data["won_run"] is True
         assert data["tokens_banked"] == 3
+
+
+class TestIntroSeenFlag:
+    def setup_method(self):
+        if os.path.exists(json_path):
+            os.remove(json_path)
+
+    def test_default_intro_unseen(self):
+        assert is_intro_seen() is False
+
+    def test_mark_intro_seen_persists(self):
+        mark_intro_seen()
+        assert is_intro_seen() is True
+
+    def test_mark_intro_seen_preserves_other_fields(self):
+        save_progression(won=True, tokens_earned=5, levels_reached=3, cards_unlocked=[])
+        mark_intro_seen()
+        data = load_progression()
+        assert data["intro_seen"] is True
+        assert data["won_run"] is True
+        assert data["tokens_banked"] == 5
+        assert data["levels_reached"] == 3
+
+
+class TestHighScores:
+    def setup_method(self):
+        if os.path.exists(json_path):
+            os.remove(json_path)
+
+    def test_load_scores_default_empty(self):
+        assert load_scores() == []
+
+    def test_record_score_appends(self):
+        entry = {
+            "total_score": 1000, "level_reached": 5,
+            "won": True, "endless": False, "ts": 100,
+        }
+        record_score(entry)
+        assert load_scores() == [entry]
+
+    def test_record_score_sorts_desc_by_total(self):
+        record_score({
+            "total_score": 500, "level_reached": 3,
+            "won": False, "endless": False, "ts": 100,
+        })
+        record_score({
+            "total_score": 1500, "level_reached": 7,
+            "won": True, "endless": False, "ts": 200,
+        })
+        record_score({
+            "total_score": 1000, "level_reached": 5,
+            "won": True, "endless": False, "ts": 300,
+        })
+        scores = load_scores()
+        assert [s["total_score"] for s in scores] == [1500, 1000, 500]
+
+    def test_record_score_trims_to_top_20(self):
+        for i in range(25):
+            record_score({
+                "total_score": i * 100, "level_reached": 1,
+                "won": False, "endless": False, "ts": i,
+            })
+        scores = load_scores()
+        assert len(scores) == 20
+        # The lowest scores got trimmed.
+        assert scores[-1]["total_score"] == 500  # 25 entries, top 20
+
+    def test_record_score_preserves_other_save_fields(self):
+        save_progression(won=True, tokens_earned=5, levels_reached=2, cards_unlocked=[])
+        mark_intro_seen()
+        record_score({
+            "total_score": 100, "level_reached": 1,
+            "won": False, "endless": False, "ts": 1,
+        })
+        data = load_progression()
+        assert data["won_run"] is True
+        assert data["intro_seen"] is True
+        assert len(data["scores"]) == 1
+
+    def test_tie_score_breaks_by_timestamp(self):
+        """When two entries have the same total_score, the newer one
+        (larger ts) sorts ahead."""
+        record_score({
+            "total_score": 500, "level_reached": 2,
+            "won": False, "endless": False, "ts": 100,
+        })
+        record_score({
+            "total_score": 500, "level_reached": 2,
+            "won": False, "endless": False, "ts": 200,
+        })
+        scores = load_scores()
+        assert scores[0]["ts"] == 200
 
 
 class TestSavePathResolution:

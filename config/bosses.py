@@ -43,7 +43,7 @@ BOSS_LIST: list[BossDef] = [
     BossDef(
         "Ghost",
         "A wall appears...",
-        "One cell per game becomes an invisible wall that blocks lines. Its location is revealed after the first normal game.",
+        "One random cell is silently turned into a wall — it looks empty but no mark will stick there. Plan around the unseen gap.",
         "ghost_wall",
     ),
     BossDef(
@@ -118,6 +118,31 @@ BOSS_LIST: list[BossDef] = [
         "The opponent sees ahead.",
         "AI plays at 100% tactical strength — blocks every threat, never misplays.",
         "hivemind",
+    ),
+    # --- Creative drop ------------------------------------------------------
+    BossDef(
+        "The Cartographer",
+        "The map is alive.",
+        "Every six of your moves, two random marks on the board swap positions. Plan lines that survive the reshuffle.",
+        "cartographer",
+    ),
+    BossDef(
+        "The Architect",
+        "Walls everywhere.",
+        "Game starts with a spiral maze of walls inset from the edges. Play down the middle.",
+        "architect",
+    ),
+    BossDef(
+        "Plague Doctor",
+        "Every line is sickly.",
+        "The board glows green and ink runs thin: every X line you score this round counts for HALF ink. Stack heavy buffs to compensate.",
+        "plague_doctor",
+    ),
+    BossDef(
+        "Hot Potato",
+        "Don't touch the lit cell.",
+        "One random cell pulses red each turn. Placing on it costs 5 ink. The lit cell rotates after every move.",
+        "hot_potato",
     ),
 ]
 

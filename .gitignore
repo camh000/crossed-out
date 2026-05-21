@@ -11,3 +11,8 @@ venv/
 .env
 .DS_Store
 .vercel
+# Coverage / CRAP artefacts
+.coverage
+.coverage.*
+coverage.crap.json
+htmlcov/

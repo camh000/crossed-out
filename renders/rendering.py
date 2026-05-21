@@ -253,7 +253,9 @@ def draw_card(surface: pygame.Surface, card_name: str, card_cost: int, card_desc
 def draw_score(surface: pygame.Surface, score: int, target: int, x: int, y: int):
     score_surf = pygame.font.SysFont("consolas", 60).render(str(score), True, ACCENT_GOLD)
     surface.blit(score_surf, (x, y))
-    tgt_surf = pygame.font.SysFont("sans-serif", 14).render(f"Target: {target}", True, TEXT_SUB)
+    tgt_surf = pygame.font.SysFont("sans-serif", 14).render(
+        f"Level Goal: {target} ink", True, TEXT_SUB,
+    )
     surface.blit(tgt_surf, (x, y + score_surf.get_height() + 4))
 
 

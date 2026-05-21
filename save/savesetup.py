@@ -74,3 +74,51 @@ def save_progression(
 def get_unlocked_cards() -> list[str]:
     """Return the list of currently unlocked cards."""
     return load_progression().get("cards_unlocked", [])
+
+
+def is_intro_seen() -> bool:
+    """True iff the first-run tutorial overlay has already been
+    completed or skipped on this save."""
+    return bool(load_progression().get("intro_seen", False))
+
+
+def mark_intro_seen() -> None:
+    """Flip the persisted `intro_seen` flag so the first-run intro
+    doesn't fire again. Preserves every other field of the save."""
+    data = load_progression()
+    data["intro_seen"] = True
+    _write(data)
+
+
+# Cap on the persisted high-score list — keeps the table scannable
+# on mobile and prevents the save file from growing unbounded.
+_HIGH_SCORE_CAP = 20
+
+
+def record_score(entry: dict) -> list[dict]:
+    """Append a finished-run high-score entry and trim to the top
+    `_HIGH_SCORE_CAP` by total_score (ties broken by timestamp,
+    newer first). Returns the merged top-N list.
+
+    `entry` keys: total_score (int), level_reached (int), won (bool),
+    endless (bool), ts (int — epoch seconds for ordering).
+    """
+    data = load_progression()
+    scores = list(data.get("scores", []))
+    scores.append(entry)
+    scores.sort(
+        key=lambda e: (
+            -int(e.get("total_score", 0)),
+            -int(e.get("ts", 0)),
+        )
+    )
+    scores = scores[:_HIGH_SCORE_CAP]
+    data["scores"] = scores
+    _write(data)
+    return scores
+
+
+def load_scores() -> list[dict]:
+    """Return the persisted high-score list (top N by total_score),
+    or [] if no scores have been recorded yet."""
+    return list(load_progression().get("scores", []))

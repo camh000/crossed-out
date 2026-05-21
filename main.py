@@ -8,7 +8,7 @@ from systems.cardsystem import CardSystem
 from systems.roguelite import RogueliteEngine
 from save.savesetup import save_progression, get_unlocked_cards
 from config.constants import (
-    SCREEN_W, SCREEN_H, BG_COLOR, TEXT_COLOR, TEXT_SUB,
+    SCREEN_W, SCREEN_H, IS_LANDSCAPE, BG_COLOR, TEXT_COLOR, TEXT_SUB,
     ACCENT_GOLD, ACCENT_GREEN, ACCENT_RED, COLOR_X, COLOR_O,
     CARD_W, CARD_H, AI_MOVE_DELAY_MS,
 )
@@ -124,6 +124,13 @@ class GameEngine:
         self._inspecting_boss: str | None = None
         # Codex tab — "glyphs" or "bosses".
         self._codex_tab: str = "glyphs"
+        # Layout mode — detected in _apply_layout() from SCREEN_W/H.
+        self._landscape: bool = False
+        self._cell_size: int = 60  # dynamic cell size (60 portrait / 100 landscape)
+        self._board_offsets: tuple[int, int] = (0, 0)
+        self._card_row_x: float = 0.0  # portrait: CENTER_X - CARD_W - 48
+        self._joker_card_area: tuple[int, int] = (0, 0)  # (w, h) of joker cards in landscape
+        self._apply_layout()
 
     def new_run(self):
         self.engine.start_new_run()
@@ -276,13 +283,34 @@ class GameEngine:
 
     def _board_layout(self) -> tuple[int, int, int]:
         """Cell size and pixel offset for rendering the current board."""
-        rows = max(1, self.board.rows)
-        cols = max(1, self.board.cols)
-        avail = int(min((SCREEN_W - 120) / cols, (SCREEN_H - 300) / rows))
-        avail = max(1, avail)
-        off_x = (SCREEN_W - cols * avail) // 2
-        off_y = 100
+        if self._landscape:
+            avail = self._cell_size
+            off_x, off_y = self._board_offsets
+        else:
+            rows = max(1, self.board.rows)
+            cols = max(1, self.board.cols)
+            avail = int(min((SCREEN_W - 120) / cols, (SCREEN_H - 300) / rows))
+            avail = max(1, avail)
+            off_x = (SCREEN_W - cols * avail) // 2
+            off_y = 100
         return avail, off_x, off_y
+
+    def _apply_layout(self) -> None:
+        """Apply layout constants based on SCREEN_W/H aspect ratio."""
+        self._landscape = (SCREEN_W > SCREEN_H)
+        if self._landscape:
+            self._cell_size = 100
+            bs = (SCREEN_W - 120) // 5  # board uses columns 0..4, leave 60px margin
+            self._board_offsets = (bs, 100)
+            self._card_row_x = bs + (4 * self._cell_size) + 16  # board right edge + margin
+            jw2, jh2 = CARD_W // 2 + 10, CARD_H // 2 + 10
+            # Place joker card row stacked vertically in the right column gap.
+            self._joker_card_area = (jw2, jh2 * len(BLACK_MARK_TYPES))
+            # Shop card positions (stacked on left side).
+            self._shop_card_start_x = 48
+            self._shop_card_start_y = SCREEN_H // 2 - CARD_H // 2
+            self._joker_row_y = SCREEN_H - JOKER_H - 24
+        # else portrait defaults are handled in draw() and handle_click() in-place.
 
     def _cell_under(self, mx: int, my: int) -> tuple[int, int] | None:
         avail, off_x, off_y = self._board_layout()
@@ -1220,21 +1248,44 @@ class GameEngine:
                 surf.blit(flash, (SCREEN_W // 2 - flash.get_width() // 2, 110))
 
             if self.shop_cards:
-                sx = (SCREEN_W - (len(self.shop_cards) * CARD_W + max(0, len(self.shop_cards) - 1) * 12)) // 2
-                for i, name in enumerate(self.shop_cards):
-                    card = get_by_name(name)
-                    cost_val = card.cost if card else 0
-                    cx = sx + i * (CARD_W + 12)
-                    cy_base = SCREEN_H // 2 - CARD_H // 2 - 20
-                    # Hover lift — render the hovered card 8 px higher.
-                    lift = 8 if self.hover_pos == f"shop:{i}" else 0
-                    cy = cy_base - lift
-                    draw_card(
-                        surf, name, cost_val, card.desc if card else "",
-                        cx, cy, CARD_W, CARD_H,
-                        is_highlighted=(self.hover_pos == f"shop:{i}"),
-                        can_afford=(pl.player.tokens >= cost_val and not full_now),
-                    )
+                if IS_LANDSCAPE:
+                    # Landscape: stack cards vertically on the left side
+                    shop_card_w = min(CARD_W, int((SCREEN_W - 40) // 3))
+                    shop_card_h = int(shop_card_w * CARD_H / CARD_W)
+                    shop_gap_x = 12
+                    col_x = 20
+                    for i, name in enumerate(self.shop_cards):
+                        col = i % 2
+                        row = i // 2
+                        cx = col_x + col * (shop_card_w + shop_gap_x)
+                        cy = 80 + row * (shop_card_h + 12)
+                        card = get_by_name(name)
+                        cost_val = card.cost if card else 0
+                        # Hover lift
+                        lift = 8 if self.hover_pos == f"shop:{i}" else 0
+                        cy = cy - lift
+                        draw_card(
+                            surf, name, cost_val, card.desc if card else "",
+                            cx, cy, shop_card_w, shop_card_h,
+                            is_highlighted=(self.hover_pos == f"shop:{i}"),
+                            can_afford=(pl.player.tokens >= cost_val and not full_now),
+                        )
+                else:
+                    sx = (SCREEN_W - (len(self.shop_cards) * CARD_W + max(0, len(self.shop_cards) - 1) * 12)) // 2
+                    for i, name in enumerate(self.shop_cards):
+                        card = get_by_name(name)
+                        cost_val = card.cost if card else 0
+                        cx = sx + i * (CARD_W + 12)
+                        cy_base = SCREEN_H // 2 - CARD_H // 2 - 20
+                        # Hover lift — render the hovered card 8 px higher.
+                        lift = 8 if self.hover_pos == f"shop:{i}" else 0
+                        cy = cy_base - lift
+                        draw_card(
+                            surf, name, cost_val, card.desc if card else "",
+                            cx, cy, CARD_W, CARD_H,
+                            is_highlighted=(self.hover_pos == f"shop:{i}"),
+                            can_afford=(pl.player.tokens >= cost_val and not full_now),
+                        )
 
             # Owned jokers shown below the shop offers so the player can see
             # what they already have while deciding.
@@ -1245,7 +1296,12 @@ class GameEngine:
             # which collided with the glyph row at y=1166 — clicks
             # landed on whichever was drawn first and felt random.
             btn_y = JOKER_ROW_Y - 70
-            reroll_btn = pygame.Rect(SCREEN_W // 2 - 220, btn_y, 200, 56)
+            if IS_LANDSCAPE:
+                reroll_btn = pygame.Rect(20, btn_y, 200, 56)
+                continue_btn = pygame.Rect(240, btn_y, 200, 56)
+            else:
+                reroll_btn = pygame.Rect(SCREEN_W // 2 - 220, btn_y, 200, 56)
+                continue_btn = pygame.Rect(SCREEN_W // 2 + 20, btn_y, 200, 56)
             pygame.draw.rect(surf, (60, 60, 100), reroll_btn, border_radius=8)
             pygame.draw.rect(surf, ACCENT_GOLD, reroll_btn, 2, border_radius=8)
             free = pl.player.upgrades.get("free_rerolls", 0)
@@ -1253,7 +1309,6 @@ class GameEngine:
             rt = pygame.font.SysFont("sans-serif", 18).render(reroll_label, True, TEXT_COLOR)
             surf.blit(rt, (reroll_btn.centerx - rt.get_width() // 2, reroll_btn.centery - rt.get_height() // 2))
 
-            continue_btn = pygame.Rect(SCREEN_W // 2 + 20, btn_y, 200, 56)
             pygame.draw.rect(surf, ACCENT_GREEN, continue_btn, border_radius=8)
             cont_t = pygame.font.SysFont("sans-serif", 20).render("Continue", True, (0, 0, 0))
             surf.blit(cont_t, (continue_btn.centerx - cont_t.get_width() // 2, continue_btn.centery - cont_t.get_height() // 2))
@@ -1487,32 +1542,57 @@ class GameEngine:
 
         elif self.state == "shop":
             if self.shop_cards:
-                sx = (SCREEN_W - (len(self.shop_cards) * CARD_W + max(0, len(self.shop_cards) - 1) * 12)) // 2
-                for i, name in enumerate(self.shop_cards):
-                    cx = sx + i * (CARD_W + 12)
-                    cy = SCREEN_H // 2 - CARD_H // 2 - 20
-                    if cx <= mx <= cx + CARD_W and cy <= my <= cy + CARD_H:
-                        card = get_by_name(name)
-                        if not card:
+                if IS_LANDSCAPE:
+                    shop_card_w = min(CARD_W, int((SCREEN_W - 40) // 3))
+                    shop_card_h = int(shop_card_w * CARD_H / CARD_W)
+                    for i, name in enumerate(self.shop_cards):
+                        col = i % 2
+                        row = i // 2
+                        cx = 20 + col * (shop_card_w + 12)
+                        cy = 80 + row * (shop_card_h + 12)
+                        if cx <= mx <= cx + shop_card_w and cy <= my <= cy + shop_card_h:
+                            card = get_by_name(name)
+                            if not card:
+                                break
+                            if len(pl.player.passive_cards) >= pl.joker_cap:
+                                self.shop_full_flash_until = pygame.time.get_ticks() + 1200
+                                break
+                            discount = pl.player.upgrades.get("shop_discount", 0)
+                            effective_cost = max(1 if card.cost > 0 else 0, card.cost - discount)
+                            if pl.player.tokens >= effective_cost:
+                                pl.player.tokens -= effective_cost
+                                pl.player.passive_cards.append(card.name)
+                                self.shop_cards.pop(i)
                             break
-                        # Joker-cap gate — refuse the purchase visually if
-                        # the player is at their cap.
-                        if len(pl.player.passive_cards) >= pl.joker_cap:
-                            self.shop_full_flash_until = pygame.time.get_ticks() + 1200
+                else:
+                    sx = (SCREEN_W - (len(self.shop_cards) * CARD_W + max(0, len(self.shop_cards) - 1) * 12)) // 2
+                    for i, name in enumerate(self.shop_cards):
+                        cx = sx + i * (CARD_W + 12)
+                        cy = SCREEN_H // 2 - CARD_H // 2 - 20
+                        if cx <= mx <= cx + CARD_W and cy <= my <= cy + CARD_H:
+                            card = get_by_name(name)
+                            if not card:
+                                break
+                            if len(pl.player.passive_cards) >= pl.joker_cap:
+                                self.shop_full_flash_until = pygame.time.get_ticks() + 1200
+                                break
+                            discount = pl.player.upgrades.get("shop_discount", 0)
+                            effective_cost = max(1 if card.cost > 0 else 0, card.cost - discount)
+                            if pl.player.tokens >= effective_cost:
+                                pl.player.tokens -= effective_cost
+                                pl.player.passive_cards.append(card.name)
+                                self.shop_cards.pop(i)
                             break
-                        # Wholesaler — shop discount per copy, min cost 1.
-                        discount = pl.player.upgrades.get("shop_discount", 0)
-                        effective_cost = max(1 if card.cost > 0 else 0, card.cost - discount)
-                        if pl.player.tokens >= effective_cost:
-                            pl.player.tokens -= effective_cost
-                            pl.player.passive_cards.append(card.name)
-                            self.shop_cards.pop(i)
-                        break
 
             # Reroll button — free if free_rerolls remain, else REROLL_COST.
             # Rect must match the draw layout in the shop draw branch.
             btn_y = JOKER_ROW_Y - 70
-            reroll_btn = pygame.Rect(SCREEN_W // 2 - 220, btn_y, 200, 56)
+            if IS_LANDSCAPE:
+                reroll_btn = pygame.Rect(20, btn_y, 200, 56)
+                cont_btn = pygame.Rect(240, btn_y, 200, 56)
+            else:
+                reroll_btn = pygame.Rect(SCREEN_W // 2 - 220, btn_y, 200, 56)
+                cont_btn = pygame.Rect(SCREEN_W // 2 + 20, btn_y, 200, 56)
             if reroll_btn.collidepoint(mx, my):
                 free = pl.player.upgrades.get("free_rerolls", 0)
                 if free > 0:
@@ -1524,8 +1604,7 @@ class GameEngine:
                     offer_count = 4 + pl.player.upgrades.get("shop_offer_extra", 0)
                     self.shop_cards = self._sample_shop_offers(offer_count)
 
-            cont = pygame.Rect(SCREEN_W // 2 + 20, btn_y, 200, 56)
-            if cont.collidepoint(mx, my):
+            if cont_btn.collidepoint(mx, my):
                 pl.next_level()
                 if pl.run_complete:
                     self.state = "gameover"
@@ -1546,6 +1625,21 @@ class GameEngine:
     def _joker_row_rects(self, pl) -> list[tuple[str, pygame.Rect]]:
         """Hit rects for each owned joker in the row. Used by the click
         handler to detect taps that open the inspect modal."""
+        if IS_LANDSCAPE:
+            unique: list[str] = []
+            seen: set[str] = set()
+            for name in pl.player.passive_cards:
+                if name not in seen:
+                    unique.append(name)
+                    seen.add(name)
+            slots = pl.joker_cap
+            total_w = slots * JOKER_W + (slots - 1) * JOKER_GAP
+            start_x = (SCREEN_W - total_w) // 2
+            rects: list[tuple[str, pygame.Rect]] = []
+            for i, name in enumerate(unique):
+                x = start_x + i * (JOKER_W + JOKER_GAP)
+                rects.append((name, pygame.Rect(x, JOKER_ROW_Y, JOKER_W, JOKER_H)))
+            return rects
         unique: list[str] = []
         seen: set[str] = set()
         for name in pl.player.passive_cards:
@@ -1866,14 +1960,27 @@ class GameEngine:
             if cell is not None:
                 self.hover_pos = cell
         elif self.state == "shop" and self.shop_cards:
-            sx = (SCREEN_W - (len(self.shop_cards) * CARD_W + max(0, len(self.shop_cards) - 1) * 12)) // 2
-            cy = SCREEN_H // 2 - CARD_H // 2 - 20
-            for i in range(len(self.shop_cards)):
-                cx = sx + i * (CARD_W + 12)
-                # Hit-test against the lifted hover position too (cy - 8).
-                if cx <= mx <= cx + CARD_W and (cy - 8) <= my <= cy + CARD_H:
-                    self.hover_pos = f"shop:{i}"
-                    break
+            if IS_LANDSCAPE:
+                shop_card_w = min(CARD_W, int((SCREEN_W - 40) // 3))
+                shop_card_h = int(shop_card_w * CARD_H / CARD_W)
+                col_x = 20
+                for i in range(len(self.shop_cards)):
+                    col = i % 2
+                    row = i // 2
+                    cx = col_x + col * (shop_card_w + 12)
+                    cy = 80 + row * (shop_card_h + 12)
+                    if cx <= mx <= cx + shop_card_w and (cy - 8) <= my <= cy + shop_card_h:
+                        self.hover_pos = f"shop:{i}"
+                        break
+            else:
+                sx = (SCREEN_W - (len(self.shop_cards) * CARD_W + max(0, len(self.shop_cards) - 1) * 12)) // 2
+                cy = SCREEN_H // 2 - CARD_H // 2 - 20
+                for i in range(len(self.shop_cards)):
+                    cx = sx + i * (CARD_W + 12)
+                    # Hit-test against the lifted hover position too (cy - 8).
+                    if cx <= mx <= cx + CARD_W and (cy - 8) <= my <= cy + CARD_H:
+                        self.hover_pos = f"shop:{i}"
+                        break
 
     async def run(self):
         # Async so the browser event loop can yield each frame under

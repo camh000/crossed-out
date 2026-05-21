@@ -1,7 +1,7 @@
 # colors
 # Portrait 9:16 — matches the dominant mobile aspect ratio so the game
 # fills an iPhone in portrait orientation without letterboxing.
-SCREEN_W, SCREEN_H = 720, 1280
+_SCREEN_W, _SCREEN_H = 720, 1280
 BG_COLOR = (20, 20, 35)
 GRID_LINE_COLOR = (30, 30, 50)
 BG_ACCENT = (25, 25, 45)
@@ -61,3 +61,17 @@ GRID_BORDER = 3
 
 # meta
 SAVE_PATH = "crossed_out_save.json"
+
+# layout orientation detector — runtime overrides below
+SCREEN_W, SCREEN_H = 720, 1280
+IS_LANDSCAPE = False  # set at import time if possible, or in GameEngine.__init__
+
+
+def _detect_layout(w, h):
+    """Compute SCREEN_W/H and IS_LANDSCAPE from window dimensions."""
+    global IS_LANDSCAPE, SCREEN_W, SCREEN_H
+    IS_LANDSCAPE = (w > h)
+    if IS_LANDSCAPE and w > h:
+        SCREEN_W, SCREEN_H = w, h
+    elif not IS_LANDSCAPE and h > w:
+        SCREEN_W, SCREEN_H = w, h

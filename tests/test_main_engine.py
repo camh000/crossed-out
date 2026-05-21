@@ -1481,40 +1481,52 @@ class TestBlindAI:
         ai = OpponentAI(b)  # no fade_age — sees everything
         assert ai.get_best_move() == (0, 2)
 
-    def test_ai_forfeits_when_picking_occupied_faded_cell(self):
+    def test_blind_ai_falls_back_to_truly_empty_cell(self):
         """If the AI's blind perception leads it to pick a cell that's
-        actually occupied (a faded mark), get_best_move returns None
-        instead of a guaranteed-to-fail placement."""
+        actually occupied (a faded mark), get_best_move falls back to
+        a truly-empty cell instead of forfeiting. The AI stays
+        informationally blind but doesn't waste turns."""
         from game.board import Board, PLAYER_X
         from game.opponent import OpponentAI
-        # Fill every cell except one, all aged past the fade threshold.
+        # Fill every cell except (1, 1) with X. fade_age=1 → all
+        # placed cells look empty to the AI.
         b = Board(size=3)
         for r in range(3):
             for c in range(3):
                 if (r, c) != (1, 1):
                     b.place_at(r, c, PLAYER_X)
-        # move_count == 8; oldest cell is age 7. With fade_age=1 every
-        # placed cell is "faded" from the AI's view, so the AI thinks
-        # all of them are EMPTY and may pick any of them.
         ai = OpponentAI(b, fade_age=1)
-        # Force the perceived view to a known state where the AI picks
-        # a truly-occupied cell — by seeding random it'll choose from
-        # the perceived-empty set which includes everything but is
-        # mostly real-occupied.
         import random
-        # Try several seeds — at least one should land on a real-occupied
-        # cell and return None.
-        forfeited = False
+        # Across many seeds, the AI must always either pick (1, 1) (the
+        # only truly-empty cell) or fall back to it — never forfeit.
         for seed in range(32):
             random.seed(seed)
             m = ai.get_best_move()
-            # The AI's choice is either the truly-empty (1,1) or None
-            # (forfeit). It should never name a real-occupied cell.
-            if m is None:
-                forfeited = True
-            else:
-                assert m == (1, 1)
-        assert forfeited, "AI never forfeited despite perceived-empty cells being real-occupied"
+            assert m == (1, 1), f"seed {seed}: expected fallback to (1,1), got {m}"
+
+    def test_ai_skips_wall_cells(self):
+        """The AI never picks a wall cell, even though walls aren't
+        tracked in board.grid. Fortress / Cell Lock / Ghost Board /
+        Architect / Hourglass all place walls — picking one was a
+        wasted opponent turn that gave the player a free move."""
+        from game.board import Board
+        from game.opponent import OpponentAI
+        b = Board(size=3)
+        # Wall every cell except (1, 1) so the AI is forced to either
+        # pick the wall or the single truly-empty cell.
+        for r in range(3):
+            for c in range(3):
+                if (r, c) != (1, 1):
+                    b.wall_cells.append((r, c))
+        ai = OpponentAI(b)
+        import random
+        for seed in range(32):
+            random.seed(seed)
+            m = ai.get_best_move()
+            # Should always pick (1, 1); never a wall.
+            assert m == (1, 1) or m is None
+            if m is not None:
+                assert m not in b.wall_cells
 
     def test_main_passes_fade_age_for_blind_boss_only(self):
         """The _ai_fade_age helper returns BLIND_FADE_AGE only on Blind

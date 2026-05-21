@@ -9,10 +9,10 @@ class OpponentAI:
         `fade_age` enables Blind-boss symmetry: when set, the AI sees
         the same faded board the player does. Cells aged past `fade_age`
         are treated as EMPTY during line-counting, threat detection,
-        and win-search. If the AI ends up picking a cell that's
-        actually occupied on the real board (a faded mark it 'forgot'
-        about), it forfeits the turn — this is the AI making the same
-        memory mistakes the mechanic forces on the player.
+        and win-search. If the AI's blind pick collides with a
+        real-occupied cell (a faded mark it couldn't see), it falls
+        back to a random truly-empty cell — that way the AI stays
+        informationally blind without wasting its turn entirely.
         """
         self.board = board
         self.difficulty = 0.7  # 70% optimal play
@@ -34,10 +34,15 @@ class OpponentAI:
         finally:
             self.board.grid = real_grid
         # If the chosen cell is actually occupied (a faded mark the AI
-        # couldn't see), the AI forfeits — symmetric with the player
-        # silently failing to click an aged-out occupied cell.
-        if move is not None and real_grid[move[0]][move[1]] != 0:
-            return None
+        # couldn't see) OR a wall, fall back to a truly-empty cell
+        # instead of forfeiting. Stays informationally blind without
+        # giving the player a free turn every time the AI guesses wrong.
+        if move is not None and (
+            real_grid[move[0]][move[1]] != 0
+            or move in self.board.wall_cells
+        ):
+            empty = self.board.get_empty_cells()
+            return random.choice(empty) if empty else None
         return move
 
     def _compute_move(self) -> tuple[int, int] | None:
@@ -53,9 +58,19 @@ class OpponentAI:
                 return move
         return self._random()
 
+    def _placeable(self, r: int, c: int) -> bool:
+        """A cell is placeable iff it's empty in the (possibly swapped)
+        perceived grid AND not a wall on the real board. Walls are stored
+        on the Board directly, not in `grid`, so even the swapped grid
+        needs the wall guard."""
+        return (
+            self.board.grid[r][c] == 0
+            and (r, c) not in self.board.wall_cells
+        )
+
     def _try_win(self) -> tuple[int, int] | None:
         for (r, c) in self.board.valid_cells:
-            if self.board.grid[r][c] == 0:
+            if self._placeable(r, c):
                 self.board.grid[r][c] = OPPONENT_O
                 lines = self.board.count_lines_for(OPPONENT_O)
                 self.board.grid[r][c] = 0
@@ -65,7 +80,7 @@ class OpponentAI:
 
     def _try_block(self) -> tuple[int, int] | None:
         for (r, c) in self.board.valid_cells:
-            if self.board.grid[r][c] == 0:
+            if self._placeable(r, c):
                 self.board.grid[r][c] = PLAYER_X
                 lines = self.board.count_lines_for(PLAYER_X)
                 self.board.grid[r][c] = 0
@@ -74,7 +89,7 @@ class OpponentAI:
         return None
 
     def _center_or_corner(self) -> tuple[int, int] | None:
-        empties = [pos for pos in self.board.valid_cells if self.board.grid[pos[0]][pos[1]] == 0]
+        empties = [pos for pos in self.board.valid_cells if self._placeable(*pos)]
         if not empties:
             return None
         # Prefer the cell closest to the centroid of the playable area
@@ -85,10 +100,8 @@ class OpponentAI:
         return empties[0]
 
     def _random(self) -> tuple[int, int] | None:
-        # Use the (possibly swapped) board grid so the AI may pick a
-        # faded-but-occupied cell — that's the symmetric blind mistake.
         empty = [(r, c) for (r, c) in sorted(self.board.valid_cells)
-                 if self.board.grid[r][c] == 0]
+                 if self._placeable(r, c)]
         if empty:
             return random.choice(empty)
         return None

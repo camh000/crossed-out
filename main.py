@@ -182,6 +182,9 @@ class GameEngine:
         pl.player.first_placed_cells = set()
         pl.player.last_x_cell = None
         pl.player.editor_hidden_cells = set()
+        # Live HUD cache — clears so leftover lines from last game
+        # don't paint on the empty new board.
+        pl.live_line_contributions = []
         # Mirror boss — reset the side-toggle so a fresh game always
         # starts the player on X.
         self._mirror_player_o = False
@@ -410,6 +413,7 @@ class GameEngine:
             return
         self._execute_ai_placement(pl)
         self._apply_post_move_mechanics(pl)
+        self._refresh_line_view(pl)
         if self._should_evaluate():
             self.evaluate_and_settle()
 
@@ -722,6 +726,25 @@ class GameEngine:
         pl.player.score += total
         pl.total_score += total
         pl.score_this_level += total
+
+    def _refresh_line_view(self, pl) -> None:
+        """Recompute the per-line contribution list for the current
+        board state and cache it on `pl.live_line_contributions`. The
+        HUD's live line glow + per-side ink totals read from this
+        cache. Called after every placement (player + AI). Cheap on
+        small boards — sub-millisecond per call."""
+        boss_mech = pl.current_boss.mechanic if pl.current_boss else None
+        is_boss = bool(pl.is_boss and pl.current_boss)
+        spotlight = self._spotlight_anchor if boss_mech == "spotlight" else None
+        centre = self._board_centre() if boss_mech == "inverse" else None
+        pl.live_line_contributions = self.card_system.line_contributions(
+            self.board, pl.player,
+            is_boss=is_boss,
+            boss_mechanic=boss_mech,
+            spotlight_zone=spotlight,
+            centre=centre,
+            level=pl.level,
+        )
 
     def _resolve_draw(self, pl) -> str:
         """Every draw grows the grid by one row + one column and lets
@@ -1152,49 +1175,23 @@ class GameEngine:
                           off_y + r1 * avail + avail // 2)
                 pygame.draw.line(surf, glow_col, start_px, end_px, 8)
 
-            # While the result panel is up, paint each completed line
-            # with a steady streak (so the player can study WHICH lines
-            # scored), and float a "+N" / "-N" label at the line's
-            # midpoint showing its contribution to ink.
-            if self.showing_result and pl.last_line_contributions:
-                badge_font = pygame.font.SysFont("consolas", max(18, avail // 4), bold=True)
-                for contrib in pl.last_line_contributions:
-                    cells = contrib["cells"]
-                    if len(cells) < 2:
-                        continue
-                    r0, c0 = cells[0]
-                    r1, c1 = cells[-1]
-                    start_px = (off_x + c0 * avail + avail // 2,
-                                off_y + r0 * avail + avail // 2)
-                    end_px = (off_x + c1 * avail + avail // 2,
-                              off_y + r1 * avail + avail // 2)
-                    if contrib["side"] == "X":
-                        streak_col = (255, 200, 80)
-                        sign = "+"
-                    else:
-                        streak_col = (255, 90, 90)
-                        # Double Cross flips O to positive contribution.
-                        sign = "+" if contrib["contribution"] >= 0 else "-"
-                    pygame.draw.line(surf, streak_col, start_px, end_px, 5)
-                    # Midpoint label with the signed contribution. We
-                    # render onto a small dark-rect "chip" for legibility
-                    # over both empty cells and placed marks.
-                    mx_ = (start_px[0] + end_px[0]) // 2
-                    my_ = (start_px[1] + end_px[1]) // 2
-                    label = f"{sign}{abs(contrib['contribution'])}"
-                    ls = badge_font.render(label, True, streak_col)
-                    bw, bh = ls.get_width() + 12, ls.get_height() + 4
-                    pygame.draw.rect(
-                        surf, (8, 8, 16),
-                        (mx_ - bw // 2, my_ - bh // 2, bw, bh),
-                        border_radius=4,
-                    )
-                    pygame.draw.rect(
-                        surf, streak_col,
-                        (mx_ - bw // 2, my_ - bh // 2, bw, bh),
-                        1, border_radius=4,
-                    )
-                    surf.blit(ls, (mx_ - ls.get_width() // 2, my_ - ls.get_height() // 2))
+            # Paint coloured streaks for every completed line, BOTH
+            # during play and on the result panel. The data source
+            # differs: live cache during play, frozen snapshot during
+            # result. The "+N" / "-N" midpoint chips only render on
+            # the result panel — they'd jitter during play as
+            # modifiers fire and feel noisy.
+            if self.showing_result:
+                contribs_to_paint = pl.last_line_contributions
+                show_chips = True
+            else:
+                contribs_to_paint = pl.live_line_contributions
+                show_chips = False
+            if contribs_to_paint:
+                self._draw_line_contributions(
+                    surf, contribs_to_paint, off_x, off_y, avail,
+                    show_chips=show_chips,
+                )
 
             # score display
             draw_score(surf, pl.player.score, pl.current_target, 20, 30)
@@ -1788,6 +1785,7 @@ class GameEngine:
             and pl.current_boss.mechanic == "tide"
         ):
             self._schedule_tide_erasure()
+        self._refresh_line_view(pl)
         if self._should_evaluate():
             self.evaluate_and_settle()
             return
@@ -2152,6 +2150,57 @@ class GameEngine:
     def _in_help_rect(self, mx: int, my: int) -> bool:
         x, y, w, h = self.HELP_RECT
         return x <= mx <= x + w and y <= my <= y + h
+
+    def _draw_line_contributions(
+        self, surf, contribs, off_x, off_y, avail, *, show_chips: bool,
+    ) -> None:
+        """Paint each completed line as a coloured streak (gold for X,
+        red for O). When `show_chips` is True (result panel only),
+        also float a `+N` / `-N` chip at the line's midpoint with the
+        line's ink contribution."""
+        badge_font = (
+            pygame.font.SysFont("consolas", max(18, avail // 4), bold=True)
+            if show_chips else None
+        )
+        for contrib in contribs:
+            cells = contrib["cells"]
+            if len(cells) < 2:
+                continue
+            r0, c0 = cells[0]
+            r1, c1 = cells[-1]
+            start_px = (off_x + c0 * avail + avail // 2,
+                        off_y + r0 * avail + avail // 2)
+            end_px = (off_x + c1 * avail + avail // 2,
+                      off_y + r1 * avail + avail // 2)
+            if contrib["side"] == "X":
+                streak_col = (255, 200, 80)
+                sign = "+"
+            else:
+                streak_col = (255, 90, 90)
+                # Double Cross flips O to a positive contribution.
+                sign = "+" if contrib["contribution"] >= 0 else "-"
+            pygame.draw.line(surf, streak_col, start_px, end_px, 5)
+            if not show_chips:
+                continue
+            mx_ = (start_px[0] + end_px[0]) // 2
+            my_ = (start_px[1] + end_px[1]) // 2
+            label = f"{sign}{abs(contrib['contribution'])}"
+            ls = badge_font.render(label, True, streak_col)
+            bw, bh = ls.get_width() + 12, ls.get_height() + 4
+            pygame.draw.rect(
+                surf, (8, 8, 16),
+                (mx_ - bw // 2, my_ - bh // 2, bw, bh),
+                border_radius=4,
+            )
+            pygame.draw.rect(
+                surf, streak_col,
+                (mx_ - bw // 2, my_ - bh // 2, bw, bh),
+                1, border_radius=4,
+            )
+            surf.blit(
+                ls,
+                (mx_ - ls.get_width() // 2, my_ - ls.get_height() // 2),
+            )
 
     def _draw_help_icon(self, surf) -> None:
         """Round '?' button rendered in the top-right of the game state.

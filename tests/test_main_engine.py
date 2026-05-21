@@ -2327,3 +2327,60 @@ class TestTideTick:
         engine._tide_clear_deadlines = [(10, [(2, 2)])]
         engine._tide_tick()
         assert engine._tide_clear_deadlines == []
+
+
+class TestLiveLineView:
+    """`_refresh_line_view` fills `pl.live_line_contributions` so the
+    HUD can paint live streaks + per-side ink totals without waiting
+    for the result panel."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_refresh_populates_x_lines(self, mc, mm, mi):
+        from main import GameEngine
+        from game.board import PLAYER_X
+        engine = GameEngine()
+        engine.board.reset(3)
+        pl = engine.engine.state
+        engine.board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        engine._refresh_line_view(pl)
+        assert len(pl.live_line_contributions) == 1
+        assert pl.live_line_contributions[0]["side"] == "X"
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_refresh_returns_empty_on_empty_board(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.board.reset(3)
+        pl = engine.engine.state
+        engine._refresh_line_view(pl)
+        assert pl.live_line_contributions == []
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_start_game_clears_live_lines(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        pl = engine.engine.state
+        # Seed a stale value.
+        pl.live_line_contributions = [{"cells": [(0, 0)], "side": "X",
+                                        "base": 5, "modifiers": [],
+                                        "wildcard": False,
+                                        "contribution": 5}]
+        engine.start_game()
+        assert pl.live_line_contributions == []
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_runstate_default_is_empty(self, mc, mm, mi):
+        from game.player import RunState
+        rs = RunState()
+        assert rs.live_line_contributions == []

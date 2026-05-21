@@ -891,20 +891,20 @@ class TestLevelScoreResets:
         assert rs.score_this_level == 0
         assert rs.level == 2
 
-    def test_level3_win_check_uses_pre_increment_target(self):
-        """Beating level 3 with cumulative ink ≥ that level's target should
-        register as a run win. The check must happen BEFORE level += 1, or
-        get_target() would compare against the clamped final value."""
+    def test_final_level_win_check_uses_pre_increment_target(self):
+        """Beating the final base level with cumulative ink ≥ target
+        should register as a run win. The check must happen BEFORE
+        level += 1, or get_target() would jump to the endless formula."""
         from game.player import RunState
-        rs = RunState(level=3)
-        rs.score_this_level = rs.get_target()  # exactly hit
+        rs = RunState(level=7)
+        rs.score_this_level = rs.get_target()
         rs.next_level()
         assert rs.run_complete is True
         assert rs.won_run is True
 
-    def test_level3_miss_check_fails_run(self):
+    def test_final_level_miss_check_fails_run(self):
         from game.player import RunState
-        rs = RunState(level=3)
+        rs = RunState(level=7)
         rs.score_this_level = rs.get_target() - 1
         rs.next_level()
         assert rs.run_complete is True

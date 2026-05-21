@@ -35,11 +35,13 @@ class RunState:
     games_per_level: int = 2
     total_score: int = 0
     score_this_level: int = 0
-    # Per-level cumulative ink targets — the run-end win check on level 3
-    # uses these.
-    score_targets: list[int] = field(default_factory=lambda: [6, 12, 20])
-    # Per-boss ante targets — failing the boss ante ends the run.
-    ante_targets: list[int] = field(default_factory=lambda: [8, 30, 100])
+    # Per-level cumulative ink targets — beating these advances the run.
+    # 7 entries for the 7-level base run; endless mode extends past the
+    # tail via a 1.3x-per-level formula in `get_target`.
+    score_targets: list[int] = field(default_factory=lambda: [6, 12, 20, 35, 55, 80, 120])
+    # Per-boss ante targets — failing the boss ante ends the run. Same
+    # shape as score_targets; endless extension uses 1.4x per level.
+    ante_targets: list[int] = field(default_factory=lambda: [8, 30, 100, 200, 400, 700, 1100])
     current_target: int = 0
     ante_target: int = 0
     is_boss: bool = False
@@ -70,6 +72,18 @@ class RunState:
     phoenix_used: bool = False
     # Cap on owned jokers. Shop refuses to sell more once reached.
     joker_cap: int = 5
+    # How many levels make up a "complete" base run. Past this the run
+    # ends and (on a win) the player can opt into endless mode.
+    max_base_level: int = 7
+    # When True, next_level never auto-ends — only running out of lives
+    # or failing a boss ante stops the run.
+    endless_mode: bool = False
+    # Has the first-run tutorial overlay been shown? Persisted via
+    # save/savesetup.py so it only fires on a fresh save.
+    intro_seen: bool = False
+    # Streak counter — incremented on a game win, reset on a loss.
+    # Read by future glyphs (Streamline-style) that scale with momentum.
+    consecutive_wins: int = 0
     # Per-game scratch state, reset in start_game.
     draws_this_game: int = 0
     score_this_game: int = 0
@@ -85,17 +99,35 @@ class RunState:
     last_line_contributions: list = field(default_factory=list)
     player: Player = field(default_factory=Player)
 
+    # Grid sizes per base-run level. Endless extends with +1 row/col
+    # every 2 levels past the base — see get_grid_size.
+    _GRID_SIZES: tuple[int, ...] = (3, 5, 7, 7, 9, 9, 9)
+
     def get_grid_size(self) -> int:
-        return [3, 5, 7][min(self.level - 1, 2)]
+        idx = self.level - 1
+        if idx < len(self._GRID_SIZES):
+            return self._GRID_SIZES[idx]
+        # Endless: grow +1 every 2 levels past the base run.
+        return self._GRID_SIZES[-1] + (self.level - len(self._GRID_SIZES)) // 2
 
     def get_target(self) -> int:
-        return self.score_targets[min(self.level - 1, 2)]
+        idx = self.level - 1
+        if idx < len(self.score_targets):
+            return self.score_targets[idx]
+        # Endless: 1.3x per level past the table.
+        return int(self.score_targets[-1] * (1.3 ** (idx - len(self.score_targets) + 1)))
 
     def get_ante_target(self) -> int:
-        return self.ante_targets[min(self.level - 1, 2)]
+        idx = self.level - 1
+        if idx < len(self.ante_targets):
+            return self.ante_targets[idx]
+        # Endless: 1.4x per level past the table.
+        return int(self.ante_targets[-1] * (1.4 ** (idx - len(self.ante_targets) + 1)))
 
     def get_multiplier(self) -> int:
-        return [1, 2, 3][min(self.level - 1, 2)]
+        # Multiplier = level number, all the way up. Simple and scales
+        # endlessly.
+        return max(1, self.level)
 
     def next_level(self) -> bool:
         # Decide pass/fail BEFORE advancing — get_target() depends on
@@ -109,7 +141,12 @@ class RunState:
         self.current_boss = None
         self.shop_phase = True
         self.score_this_level = 0
-        if self.level > 3:
+        # Endless mode never auto-ends — only zero lives or a failed
+        # ante stops the run. The "did they pass the level target" check
+        # only matters at the base-run finish line.
+        if self.endless_mode:
+            return True
+        if self.level > self.max_base_level:
             self.run_complete = True
             self.won_run = passed
             return False

@@ -604,8 +604,11 @@ class GameEngine:
             if pacifist > 0 and pl.player.upgrades.get("os_destroyed", 0) == 0:
                 pl.player.tokens += 2 * pacifist
             pl.draw_multiplier = 1.0
+            # Streak counter — read by any future momentum-scaling glyph.
+            pl.consecutive_wins += 1
         else:  # lose
             pl.draw_multiplier = 1.0
+            pl.consecutive_wins = 0
             # Patience: if a game ends with the board full and you
             # scored zero X lines, gain a life back. Caps at max_lives.
             patience = pl.player.upgrades.get("patience", 0)
@@ -1261,20 +1264,49 @@ class GameEngine:
         elif self.state == "gameover":
             pl = self.engine.state
             won = pl.won_run
-            txt = "RUN COMPLETE!" if won else "RUN FAILED!"
-            col = ACCENT_GREEN if won else ACCENT_RED
-            draw_big_centered_text(surf, txt, self.big_font, col, 200)
-            s1 = pygame.font.SysFont("sans-serif", 24).render(f"Score: {pl.total_score}", True, TEXT_COLOR)
+            # Three flavours: base-win, base-fail, endless-end.
+            if pl.endless_mode:
+                title = "ENDLESS RUN ENDED"
+                col = ACCENT_GOLD
+            elif won:
+                title = "RUN COMPLETE!"
+                col = ACCENT_GREEN
+            else:
+                title = "RUN FAILED!"
+                col = ACCENT_RED
+            draw_big_centered_text(surf, title, self.big_font, col, 200)
+            s1 = pygame.font.SysFont("sans-serif", 24).render(
+                f"Score: {pl.total_score}", True, TEXT_COLOR,
+            )
             surf.blit(s1, (SCREEN_W // 2 - s1.get_width() // 2, 320))
-            s2 = pygame.font.SysFont("sans-serif", 20).render(f"Final Level: {pl.level}  |  Draw Penalty: {100 - int((1 - pl.draw_multiplier) * 100):.0f}%", True, TEXT_SUB)
+            level_label = (
+                f"Reached level {pl.level}"
+                if pl.endless_mode else f"Final Round: {pl.level} / {pl.max_base_level}"
+            )
+            s2 = pygame.font.SysFont("sans-serif", 20).render(level_label, True, TEXT_SUB)
             surf.blit(s2, (SCREEN_W // 2 - s2.get_width() // 2, 360))
-            
-            btn_w, btn_h = 200, 50
+
+            # Buttons. Always show MAIN MENU. Show CONTINUE ENDLESS only
+            # when the player just won the base run (not already in
+            # endless, not a failure).
+            btn_w, btn_h = 240, 56
+            show_endless = won and not pl.endless_mode
+            if show_endless:
+                endless_btn = pygame.Rect(
+                    SCREEN_W // 2 - btn_w // 2, SCREEN_H - 200, btn_w, btn_h,
+                )
+                pygame.draw.rect(surf, ACCENT_GOLD, endless_btn, border_radius=8)
+                eb_t = pygame.font.SysFont("consolas", 20, bold=True).render(
+                    "CONTINUE ENDLESS", True, (0, 0, 0),
+                )
+                surf.blit(eb_t, (endless_btn.centerx - eb_t.get_width() // 2,
+                                 endless_btn.centery - eb_t.get_height() // 2))
+
             btn = pygame.Rect(SCREEN_W // 2 - btn_w // 2, SCREEN_H - 120, btn_w, btn_h)
-            hover_color = ACCENT_GOLD if self.hover_pos and btn.collidepoint(pygame.mouse.get_pos()) else ACCENT_GREEN
-            pygame.draw.rect(surf, hover_color, btn, border_radius=8)
+            pygame.draw.rect(surf, ACCENT_GREEN, btn, border_radius=8)
             btn_txt = self.font.render("MAIN MENU", True, (0, 0, 0))
-            surf.blit(btn_txt, (btn.centerx - btn_txt.get_width() // 2, btn.centery - btn_txt.get_height() // 2))
+            surf.blit(btn_txt, (btn.centerx - btn_txt.get_width() // 2,
+                                btn.centery - btn_txt.get_height() // 2))
 
         # Joker inspect modal — drawn last so it sits above every other UI.
         self._draw_inspect_modal(surf, pl)
@@ -1370,8 +1402,25 @@ class GameEngine:
             self._boss_intro_start = None
 
         elif self.state == "gameover":
-            b_w, b_h = 200, 50
-            btn = pygame.Rect(SCREEN_W // 2 - b_w // 2, SCREEN_H - 120, b_w, b_h)
+            btn_w, btn_h = 240, 56
+            # CONTINUE ENDLESS button — only when the player just won
+            # the base run (not already endless, not a failure).
+            show_endless = pl.won_run and not pl.endless_mode
+            if show_endless:
+                endless_btn = pygame.Rect(
+                    SCREEN_W // 2 - btn_w // 2, SCREEN_H - 200, btn_w, btn_h,
+                )
+                if endless_btn.collidepoint(mx, my):
+                    # Flip into endless mode and route back to the shop —
+                    # they just beat a boss, so shop is the natural next
+                    # step. Clear the run-end flags so the shop's
+                    # Continue button can re-advance the level.
+                    pl.endless_mode = True
+                    pl.run_complete = False
+                    pl.won_run = False
+                    self.do_shop()
+                    return
+            btn = pygame.Rect(SCREEN_W // 2 - btn_w // 2, SCREEN_H - 120, btn_w, btn_h)
             if btn.collidepoint(mx, my):
                 self.state = "menu"
             return
@@ -1531,9 +1580,6 @@ class GameEngine:
                     self.state = "gameover"
                 else:
                     self.start_game()
-
-        elif self.state == "gameover":
-            self.state = "menu"
 
     def _joker_sell_price(self, name: str) -> int:
         """Sell price for a joker — 50% of cost, rounded down. Sacrifice

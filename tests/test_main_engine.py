@@ -1949,6 +1949,141 @@ class TestNewBosses:
         assert os_after - os_before == 1
 
 
+class TestClickHandlerDispatch:
+    """`handle_click` now routes to per-state methods via the
+    `_CLICK_HANDLERS` dispatch table. Pin the table shape so
+    refactors can't silently drop a state, and exercise each
+    handler enough to keep their CRAP under control."""
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_dispatch_table_covers_every_state(self, mc, mm, mi):
+        from main import GameEngine
+        expected = {
+            "menu", "codex", "scores", "intro", "transition",
+            "boss_intro", "gameover", "game", "shop",
+        }
+        assert set(GameEngine._CLICK_HANDLERS) == expected
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_codex_back_routes_to_menu_by_default(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.state = "codex"
+        layout = engine._codex_layout()
+        engine._click_codex(layout["back"].centerx, layout["back"].centery)
+        assert engine.state == "menu"
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_codex_back_routes_to_return_state(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.state = "codex"
+        engine._codex_return_state = "game"
+        layout = engine._codex_layout()
+        engine._click_codex(layout["back"].centerx, layout["back"].centery)
+        assert engine.state == "game"
+        assert engine._codex_return_state is None
+
+    # Tab switching + chip selection live under the same _click_codex
+    # entry point; they hit `back` first under the conftest pygame
+    # stub (collidepoint always truthy) so they're not testable via
+    # the dispatcher path. The dispatch-table pin + layout pin in
+    # TestCodex cover the shape; coverage will come from a Phase-3
+    # rect-aware fixture if needed.
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_intro_skip_marks_seen_and_transitions(self, mc, mm, mi):
+        from main import GameEngine
+        engine = GameEngine()
+        engine.state = "intro"
+        engine._intro_step = 1
+        layout = engine._intro_layout()
+        with patch('main.mark_intro_seen') as mocked_mark:
+            engine._click_intro(
+                layout["skip"].centerx, layout["skip"].centery,
+            )
+            mocked_mark.assert_called_once()
+        assert engine.state == "transition"
+
+    # back / next are guarded by `skip` in the rect order — under the
+    # conftest pygame stub `collidepoint` always returns truthy, so
+    # `skip` would fire first regardless. Skip is the most important
+    # path to pin, and it works because it's the first rect checked.
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_shop_card_purchase_consumes_tokens(self, mc, mm, mi):
+        from main import GameEngine
+        from config.constants import SCREEN_W, SCREEN_H, CARD_W
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        engine.do_shop()
+        pl = engine.engine.state
+        pl.player.tokens = 50
+        before_count = len(pl.player.passive_cards)
+        sx = (SCREEN_W
+              - (len(engine.shop_cards) * CARD_W
+                 + max(0, len(engine.shop_cards) - 1) * 12)) // 2
+        cx, cy = sx + CARD_W // 2, SCREEN_H // 2
+        consumed = engine._try_buy_shop_card(cx, cy, pl)
+        assert consumed is True
+        assert len(pl.player.passive_cards) == before_count + 1
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_shop_card_refused_when_at_joker_cap(self, mc, mm, mi):
+        from main import GameEngine
+        from config.constants import SCREEN_W, SCREEN_H, CARD_W
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        engine.do_shop()
+        pl = engine.engine.state
+        pl.player.tokens = 50
+        pl.player.passive_cards = ["Point Multiplier"] * pl.joker_cap
+        sx = (SCREEN_W
+              - (len(engine.shop_cards) * CARD_W
+                 + max(0, len(engine.shop_cards) - 1) * 12)) // 2
+        cx, cy = sx + CARD_W // 2, SCREEN_H // 2
+        consumed = engine._try_buy_shop_card(cx, cy, pl)
+        assert consumed is True  # click consumed (flash fires)
+        assert len(pl.player.passive_cards) == pl.joker_cap
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_shop_card_refused_when_low_tokens(self, mc, mm, mi):
+        from main import GameEngine
+        from config.constants import SCREEN_W, SCREEN_H, CARD_W
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[]), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        engine.do_shop()
+        pl = engine.engine.state
+        pl.player.tokens = 0
+        before_count = len(pl.player.passive_cards)
+        sx = (SCREEN_W
+              - (len(engine.shop_cards) * CARD_W
+                 + max(0, len(engine.shop_cards) - 1) * 12)) // 2
+        cx, cy = sx + CARD_W // 2, SCREEN_H // 2
+        engine._try_buy_shop_card(cx, cy, pl)
+        assert len(pl.player.passive_cards) == before_count
+
+
 class TestQuicksandTick:
     """Direct unit tests for `_quicksand_tick`. The helper iterates the
     board and erases marks that have been left without a same-side

@@ -1,8 +1,10 @@
 {
   "game/opponent.py:get_best_move": 38.1,
+  "main.py:_apply_post_player_move_boss_effects": 44.6,
+  "main.py:_click_codex": 30.3,
+  "main.py:_place_player_mark": 194.7,
   "main.py:_tick_ai_move": 201.0,
   "main.py:evaluate_and_settle": 309.1,
-  "main.py:handle_click": 4732.4,
   "main.py:handle_motion": 60.7,
   "main.py:run": 49.3,
   "main.py:start_game": 43.5,

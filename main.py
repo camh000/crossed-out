@@ -1496,8 +1496,11 @@ class GameEngine:
         pygame.display.flip()
 
     def handle_click(self, mx, my, mouse_btn):
+        """Top-level click dispatcher. Modal overlays + joker-row chip
+        taps are handled here for every state; everything else routes
+        to a per-state handler. Each handler keeps using `self.*` for
+        engine state — no parameter plumbing required."""
         pl = self.engine.state
-
         # Inspect modal (glyph OR boss) takes priority over every
         # state-specific handler. The Sell button is the only
         # interactive zone inside the modal panel; everything else
@@ -1514,366 +1517,375 @@ class GameEngine:
         if self._inspecting_boss:
             self._inspecting_boss = None
             return
-
         # Joker row taps in playable / shop states open the inspect modal.
         if self.state in ("game", "shop"):
             for name, rect in self._joker_row_rects(pl):
                 if rect.collidepoint(mx, my):
                     self._inspecting_joker = name
                     return
+        handler = self._CLICK_HANDLERS.get(self.state)
+        if handler is not None:
+            handler(self, mx, my)
 
-        if self.state == "menu":
-            btn = pygame.Rect(SCREEN_W // 2 - 160, SCREEN_H // 2 - 30, 320, 60)
-            codex_btn = pygame.Rect(SCREEN_W // 2 - 120, SCREEN_H // 2 + 60, 240, 50)
-            scores_btn = pygame.Rect(SCREEN_W // 2 - 120, SCREEN_H // 2 + 120, 240, 50)
-            if btn.collidepoint(mx, my):
-                self.new_run()
-            elif codex_btn.collidepoint(mx, my):
-                self.state = "codex"
-                self._codex_tab = "glyphs"
-            elif scores_btn.collidepoint(mx, my):
-                self.state = "scores"
+    def _click_menu(self, mx, my) -> None:
+        btn = pygame.Rect(SCREEN_W // 2 - 160, SCREEN_H // 2 - 30, 320, 60)
+        codex_btn = pygame.Rect(SCREEN_W // 2 - 120, SCREEN_H // 2 + 60, 240, 50)
+        scores_btn = pygame.Rect(SCREEN_W // 2 - 120, SCREEN_H // 2 + 120, 240, 50)
+        if btn.collidepoint(mx, my):
+            self.new_run()
+        elif codex_btn.collidepoint(mx, my):
+            self.state = "codex"
+            self._codex_tab = "glyphs"
+        elif scores_btn.collidepoint(mx, my):
+            self.state = "scores"
 
-        elif self.state == "codex":
-            layout = self._codex_layout()
-            if layout["back"].collidepoint(mx, my):
-                # BACK routes wherever the codex was opened from. The
-                # in-game "?" icon sets _codex_return_state so we slip
-                # back into the game; the menu path leaves it None.
-                if self._codex_return_state is not None:
-                    self.state = self._codex_return_state
-                    self._codex_return_state = None
-                else:
-                    self.state = "menu"
-                return
-            if layout["tab_rules"].collidepoint(mx, my):
-                self._codex_tab = "rules"
-                return
-            if layout["tab_glyphs"].collidepoint(mx, my):
-                self._codex_tab = "glyphs"
-                return
-            if layout["tab_bosses"].collidepoint(mx, my):
-                self._codex_tab = "bosses"
-                return
-            for name, rect in layout["chips"]:
-                if rect.collidepoint(mx, my):
-                    if self._codex_tab == "glyphs":
-                        self._inspecting_joker = name
-                    else:
-                        self._inspecting_boss = name
-                    return
-
-        elif self.state == "scores":
-            back = pygame.Rect(20, 20, 100, 44)
-            if back.collidepoint(mx, my):
-                # Clear the "just finished" highlight on the way out.
-                self._last_score_entry = None
+    def _click_codex(self, mx, my) -> None:
+        layout = self._codex_layout()
+        if layout["back"].collidepoint(mx, my):
+            # BACK routes wherever the codex was opened from. The
+            # in-game "?" icon sets _codex_return_state so we slip
+            # back into the game; the menu path leaves it None.
+            if self._codex_return_state is not None:
+                self.state = self._codex_return_state
+                self._codex_return_state = None
+            else:
                 self.state = "menu"
             return
+        for tab_key, rect_key in (
+            ("rules", "tab_rules"),
+            ("glyphs", "tab_glyphs"),
+            ("bosses", "tab_bosses"),
+        ):
+            if layout[rect_key].collidepoint(mx, my):
+                self._codex_tab = tab_key
+                return
+        for name, rect in layout["chips"]:
+            if rect.collidepoint(mx, my):
+                if self._codex_tab == "glyphs":
+                    self._inspecting_joker = name
+                else:
+                    self._inspecting_boss = name
+                return
 
-        elif self.state == "intro":
-            layout = self._intro_layout()
-            steps = self._intro_steps()
-            if layout["skip"].collidepoint(mx, my):
+    def _click_scores(self, mx, my) -> None:
+        back = pygame.Rect(20, 20, 100, 44)
+        if back.collidepoint(mx, my):
+            # Clear the "just finished" highlight on the way out.
+            self._last_score_entry = None
+            self.state = "menu"
+
+    def _click_intro(self, mx, my) -> None:
+        layout = self._intro_layout()
+        steps = self._intro_steps()
+        if layout["skip"].collidepoint(mx, my):
+            mark_intro_seen()
+            self.state = "transition"
+            return
+        if layout["back"].collidepoint(mx, my) and self._intro_step > 0:
+            self._intro_step -= 1
+            return
+        if layout["next"].collidepoint(mx, my):
+            if self._intro_step >= len(steps) - 1:
                 mark_intro_seen()
                 self.state = "transition"
-                return
-            if layout["back"].collidepoint(mx, my) and self._intro_step > 0:
-                self._intro_step -= 1
-                return
-            if layout["next"].collidepoint(mx, my):
-                if self._intro_step >= len(steps) - 1:
-                    mark_intro_seen()
-                    self.state = "transition"
-                else:
-                    self._intro_step += 1
+            else:
+                self._intro_step += 1
+
+    def _click_transition(self, mx, my) -> None:
+        pl = self.engine.state
+        card_y = 460
+        sx = SCREEN_W // 2 - (3 * CARD_W + 2 * 12) // 2
+        for i in range(len(self.starter_cards)):
+            cx = sx + i * (CARD_W + 12)
+            if cx <= mx <= cx + CARD_W and card_y <= my <= card_y + CARD_H:
+                # The starter joker is FREE — no token deduction. It
+                # goes straight into passive_cards so its triggers run
+                # from the very first game.
+                pl.player.passive_cards.append(self.starter_cards[i])
+                self.start_game()
                 return
 
-        elif self.state == "transition":
-            card_y = 460
-            sx = SCREEN_W // 2 - (3 * CARD_W + 2 * 12) // 2
-            for i in range(len(self.starter_cards)):
-                cx = sx + i * (CARD_W + 12)
-                if cx <= mx <= cx + CARD_W and card_y <= my <= card_y + CARD_H:
-                    card_name = self.starter_cards[i]
-                    card = get_by_name(card_name)
-                    # The starter joker is FREE — no token deduction. It
-                    # goes straight into passive_cards so its triggers run
-                    # from the very first game.
-                    pl.player.passive_cards.append(card_name)
-                    self.start_game()
-                    return
-            # Click missed every card — ignore.
+    def _click_boss_intro(self, mx, my) -> None:
+        pl = self.engine.state
+        # If the entrance is still playing, the first click skips it.
+        if self._boss_intro_start is not None:
+            elapsed = pygame.time.get_ticks() - self._boss_intro_start
+            if elapsed < 900:
+                self._boss_intro_start = pygame.time.get_ticks() - 900
+                return
+        pl.game_result = None
+        self.showing_result = False
+        # Note: pl.is_boss stays True — start_game set it because this
+        # IS the boss game. Clearing it here would hide the mechanic
+        # from every runtime check in evaluate_and_settle / rendering.
+        self.countdown_start = pygame.time.get_ticks()
+        self.state = "game"
+        self._boss_intro_start = None
+
+    def _click_gameover(self, mx, my) -> None:
+        pl = self.engine.state
+        btn_w, btn_h = 240, 56
+        # CONTINUE ENDLESS button — only when the player just won
+        # the base run (not already endless, not a failure).
+        if pl.won_run and not pl.endless_mode:
+            endless_btn = pygame.Rect(
+                SCREEN_W // 2 - btn_w // 2, SCREEN_H - 200, btn_w, btn_h,
+            )
+            if endless_btn.collidepoint(mx, my):
+                # Flip into endless mode and route back to the shop —
+                # they just beat a boss, so shop is the natural next
+                # step. Clear the run-end flags so the shop's
+                # Continue button can re-advance the level.
+                pl.endless_mode = True
+                pl.run_complete = False
+                pl.won_run = False
+                self.do_shop()
+                return
+        btn = pygame.Rect(SCREEN_W // 2 - btn_w // 2, SCREEN_H - 120, btn_w, btn_h)
+        if btn.collidepoint(mx, my):
+            self.state = "menu"
+
+    def _click_game(self, mx, my) -> None:
+        pl = self.engine.state
+        # In-game "?" help icon takes precedence over board clicks
+        # so a tap on the chip can't accidentally place an X. We
+        # bounds-check by raw arithmetic so the test harness's
+        # MagicMock'd pygame.Rect doesn't always "collide".
+        if self._in_help_rect(mx, my):
+            self._open_help()
             return
+        # If we're displaying a result overlay, the click advances
+        # past the staged reveal (and on to the next game / shop).
+        if self.showing_result:
+            self._advance_past_result_overlay(pl)
+            return
+        cell = self._cell_under(mx, my)
+        if cell is not None and self.board.grid[cell[0]][cell[1]] == 0:
+            self._place_player_mark(cell[0], cell[1], pl)
 
-        elif self.state == "boss_intro":
-            # If the entrance is still playing, the first click skips it.
-            if self._boss_intro_start is not None:
-                elapsed = pygame.time.get_ticks() - self._boss_intro_start
-                if elapsed < 900:
-                    self._boss_intro_start = pygame.time.get_ticks() - 900
-                    return
-            pl.game_result = None
-            self.showing_result = False
-            # Note: pl.is_boss stays True — start_game set it because this
-            # IS the boss game. Clearing it here would hide the mechanic
-            # from every runtime check in evaluate_and_settle / rendering.
+    def _advance_past_result_overlay(self, pl) -> None:
+        """Click-to-skip / click-to-advance for the result overlay.
+        Snaps a still-playing reveal to its final frame on the first
+        click; the second click dismisses the panel and routes to the
+        shop (after boss games) or the next game."""
+        staging_done = (
+            self._result_anim_start is None
+            or (pygame.time.get_ticks() - self._result_anim_start) >= 1100
+        )
+        if not staging_done:
+            self._result_anim_start = pygame.time.get_ticks() - 1100
+            self.animator.finish("result_panel")
+            return
+        was_boss = pl.is_boss
+        run_ending = getattr(self, "_pending_run_end", False)
+        self.showing_result = False
+        self._result_anim_start = None
+        pl.game_result = None
+        self.card_system.post_game_cleanup(pl.player)
+        if run_ending:
+            self._pending_run_end = False
+            self.finish_run(won=False)
+            return
+        if was_boss:
+            self.do_shop()
+        else:
+            self.start_game()
+
+    def _place_player_mark(self, row: int, col: int, pl) -> None:
+        """Place the player's mark on (row, col). Handles Mirror's
+        side toggle, all per-move boss side-effects (Swap / Taxman /
+        Cartographer / Hot Potato / ...), Echo's mirrored O, on_x_placed
+        glyph triggers, Tide deadline scheduling, and AI scheduling."""
+        is_mirror = (
+            pl.is_boss and pl.current_boss
+            and pl.current_boss.mechanic == "mirror"
+        )
+        player_side = (
+            OPPONENT_O if (is_mirror and self._mirror_player_o)
+            else PLAYER_X
+        )
+        # Capture the move_count BEFORE placement so we can detect
+        # all marks landed during this turn (player's X plus any
+        # triggered placements from Ricochet / Blind Shot / Double
+        # Strike etc).
+        before_marks = self.board.move_count
+        if not self.board.place_at(row, col, player_side):
+            return
+        pl.player.cells_played.append((row, col))
+        if is_mirror:
+            self._mirror_player_o = not self._mirror_player_o
+        # Track "most-recently placed X" for the Last Word glyph
+        # and other "most-recent" effects. Per-game scratch —
+        # cleared in start_game. Mirror O-placements don't update
+        # this — Last Word is X-only.
+        if player_side == PLAYER_X:
+            pl.player.last_x_cell = (row, col)
+        self._apply_post_player_move_boss_effects(row, col, pl)
+        # Fire on_x_placed jokers (Ricochet, Overload, etc).
+        # Mirror O-placements don't fire X glyphs — they're opponent
+        # marks under the player's control.
+        if player_side == PLAYER_X:
+            fired = self.card_system.fire_x_placed(
+                self.board, pl.player, row, col,
+            )
+        else:
+            fired = []
+        if (
+            pl.is_boss and pl.current_boss
+            and pl.current_boss.mechanic == "echo"
+            and player_side == PLAYER_X
+        ):
+            self._echo_mirror_response(row, col, pl)
+        self._animate_new_marks(before_move_count=before_marks)
+        self._animate_jokers(fired)
+        if (
+            pl.is_boss and pl.current_boss
+            and pl.current_boss.mechanic == "tide"
+        ):
+            self._schedule_tide_erasure()
+        if self._should_evaluate():
+            self.evaluate_and_settle()
+            return
+        # Quick Draw consumes a skip stack immediately so the turn
+        # budget is honoured even though the AI move is deferred.
+        skip_stack = pl.player.upgrades.get("skip_opponent", 0)
+        if skip_stack > 0:
+            pl.player.upgrades["skip_opponent"] = skip_stack - 1
+            if (
+                pl.is_boss and pl.current_boss
+                and pl.current_boss.mechanic == "poison"
+            ):
+                self.board.tick_poison()
+            if self._should_evaluate():
+                self.evaluate_and_settle()
+            return
+        # Mirror boss has no AI response — the player just keeps
+        # placing, alternating side, until the board is full.
+        if is_mirror:
+            if self._should_evaluate():
+                self.evaluate_and_settle()
+            return
+        # Otherwise schedule the AI's response — the per-frame
+        # tick fires it after AI_MOVE_DELAY_MS so the player sees
+        # their X land before the response.
+        self._ai_move_at = pygame.time.get_ticks() + AI_MOVE_DELAY_MS
+
+    def _apply_post_player_move_boss_effects(self, row: int, col: int, pl) -> None:
+        """Boss side-effects that follow the player's placement. Poison
+        ticks happen later (after the AI responds); only the
+        per-placement REGISTER happens here."""
+        if not (pl.is_boss and pl.current_boss):
+            return
+        bm = pl.current_boss.mechanic
+        if bm == "swap" and self.board.move_count % 3 == 0:
+            self.board.apply_swap()
+        elif bm == "timed":
             self.countdown_start = pygame.time.get_ticks()
-            self.state = "game"
-            self._boss_intro_start = None
+        elif bm == "poison" and (row, col) in self.board.poison_cells:
+            self.board.register_poison_hit(row, col, ttl=2)
+        elif bm == "taxman":
+            pl.player.tokens = max(0, pl.player.tokens - 1)
+        elif bm == "spotlight":
+            self._spotlight_move()
+        elif bm == "cartographer":
+            n = pl.player.upgrades.get("carto_moves", 0) + 1
+            pl.player.upgrades["carto_moves"] = n
+            if n % 6 == 0:
+                self._cartographer_swap()
+        elif bm == "hot_potato":
+            if self._hot_potato_cell == (row, col):
+                pl.player.tokens = max(0, pl.player.tokens - 5)
+            self._hot_potato_rotate()
 
-        elif self.state == "gameover":
-            btn_w, btn_h = 240, 56
-            # CONTINUE ENDLESS button — only when the player just won
-            # the base run (not already endless, not a failure).
-            show_endless = pl.won_run and not pl.endless_mode
-            if show_endless:
-                endless_btn = pygame.Rect(
-                    SCREEN_W // 2 - btn_w // 2, SCREEN_H - 200, btn_w, btn_h,
-                )
-                if endless_btn.collidepoint(mx, my):
-                    # Flip into endless mode and route back to the shop —
-                    # they just beat a boss, so shop is the natural next
-                    # step. Clear the run-end flags so the shop's
-                    # Continue button can re-advance the level.
-                    pl.endless_mode = True
-                    pl.run_complete = False
-                    pl.won_run = False
-                    self.do_shop()
-                    return
-            btn = pygame.Rect(SCREEN_W // 2 - btn_w // 2, SCREEN_H - 120, btn_w, btn_h)
-            if btn.collidepoint(mx, my):
-                self.state = "menu"
+    def _echo_mirror_response(self, row: int, col: int, pl) -> None:
+        """Echo boss — drop one O at the cell mirrored across the
+        board centre. No-op if the cell is occupied / a wall / off the
+        playable region."""
+        cr, cc = self._board_centre()
+        mr, mc = 2 * cr - row, 2 * cc - col
+        if (mr, mc) not in self.board.valid_cells:
             return
+        if (mr, mc) == (row, col):
+            return
+        if self.board.grid[mr][mc] != 0:
+            return
+        if (mr, mc) in self.board.wall_cells:
+            return
+        if self.board.place_at(mr, mc, OPPONENT_O):
+            self.card_system.fire_ai_placed(self.board, pl.player, mr, mc)
 
-        elif self.state == "game":
-            # In-game "?" help icon takes precedence over board clicks
-            # so a tap on the chip can't accidentally place an X. We
-            # bounds-check by raw arithmetic so the test harness's
-            # MagicMock'd pygame.Rect doesn't always "collide".
-            if self._in_help_rect(mx, my):
-                self._open_help()
-                return
-            # If we're displaying a result overlay: the first click while
-            # the staged reveal is still playing snaps to the end frame
-            # (player wants to skip ahead). The next click advances
-            # state. Compare elapsed against the slowest sub-anim (total
-            # finishes at +1100 ms).
-            if self.showing_result:
-                staging_done = (
-                    self._result_anim_start is None
-                    or (pygame.time.get_ticks() - self._result_anim_start) >= 1100
-                )
-                if not staging_done:
-                    # Snap staging to its final frame and let the next
-                    # click actually dismiss the panel.
-                    self._result_anim_start = pygame.time.get_ticks() - 1100
-                    self.animator.finish("result_panel")
-                    return
-                was_boss = pl.is_boss
-                run_ending = getattr(self, "_pending_run_end", False)
-                self.showing_result = False
-                self._result_anim_start = None
-                pl.game_result = None
-                self.card_system.post_game_cleanup(pl.player)
-                if run_ending:
-                    self._pending_run_end = False
-                    self.finish_run(won=False)
-                    return
-                if was_boss:
-                    self.do_shop()
-                else:
-                    self.start_game()
-                return
+    def _schedule_tide_erasure(self) -> None:
+        """Tide boss — every X line completed this turn is queued for
+        erasure one AI move later. Player keeps the ink, loses the cells."""
+        new_lines = [
+            cells for (val, cells) in self.board.get_lines()
+            if val == PLAYER_X
+        ]
+        if not new_lines:
+            return
+        deadline = self.board.move_count + 1
+        for line in new_lines:
+            self._tide_clear_deadlines.append((deadline, list(line)))
 
-            cell = self._cell_under(mx, my)
-            if cell is not None and self.board.grid[cell[0]][cell[1]] == 0:
-                row, col = cell
-                # Mirror boss: the player alternates X / O themselves.
-                # _mirror_player_o tracks which side this click places;
-                # the AI doesn't move on Mirror games.
-                is_mirror = (
-                    pl.is_boss and pl.current_boss
-                    and pl.current_boss.mechanic == "mirror"
-                )
-                player_side = (
-                    OPPONENT_O if (is_mirror and self._mirror_player_o)
-                    else PLAYER_X
-                )
-                # Capture the move_count BEFORE placement so we can
-                # detect all marks landed during this turn (player's X
-                # plus any triggered placements from Ricochet / Blind
-                # Shot / Double Strike etc).
-                before_marks = self.board.move_count
-                placed = self.board.place_at(row, col, player_side)
-                if placed:
-                    pl.player.cells_played.append((row, col))
-                    if is_mirror:
-                        self._mirror_player_o = not self._mirror_player_o
-                    # Track "most-recently placed X" for the Last Word
-                    # glyph and other "most-recent" effects. Per-game
-                    # scratch — cleared in start_game. Mirror O-placements
-                    # don't update this — Last Word is X-only.
-                    if player_side == PLAYER_X:
-                        pl.player.last_x_cell = (row, col)
+    def _click_shop(self, mx, my) -> None:
+        pl = self.engine.state
+        if self.shop_cards and self._try_buy_shop_card(mx, my, pl):
+            return
+        btn_y = JOKER_ROW_Y - 70
+        # Reroll and Continue are checked independently — reroll
+        # silently no-ops if the player has neither a free reroll nor
+        # enough tokens, so we don't short-circuit on its collision.
+        reroll_btn = pygame.Rect(SCREEN_W // 2 - 220, btn_y, 200, 56)
+        if reroll_btn.collidepoint(mx, my):
+            self._do_shop_reroll(pl)
+        cont = pygame.Rect(SCREEN_W // 2 + 20, btn_y, 200, 56)
+        if cont.collidepoint(mx, my):
+            pl.next_level()
+            if pl.run_complete:
+                self.state = "gameover"
+            else:
+                self.start_game()
 
-                    # Boss side-effects that follow the player's move
-                    # directly. Poison TICK happens later, after the AI
-                    # responds; only the REGISTER happens here.
-                    if pl.is_boss and pl.current_boss:
-                        bm = pl.current_boss.mechanic
-                        if bm == "swap" and self.board.move_count % 3 == 0:
-                            self.board.apply_swap()
-                        if bm == "timed":
-                            self.countdown_start = pygame.time.get_ticks()
-                        if bm == "poison" and (row, col) in self.board.poison_cells:
-                            self.board.register_poison_hit(row, col, ttl=2)
-                        if bm == "taxman":
-                            # Drain 1 token per player turn during Tax Man.
-                            pl.player.tokens = max(0, pl.player.tokens - 1)
-                        if bm == "spotlight":
-                            # Roving zone re-anchors each player move.
-                            self._spotlight_move()
-                        if bm == "cartographer":
-                            # Every 6 of the player's moves, swap two random
-                            # non-empty cells.
-                            n = pl.player.upgrades.get("carto_moves", 0) + 1
-                            pl.player.upgrades["carto_moves"] = n
-                            if n % 6 == 0:
-                                self._cartographer_swap()
-                        if bm == "hot_potato":
-                            # If the player landed on the lit cell, eat a
-                            # 5-token penalty (and bump score downward).
-                            if self._hot_potato_cell == (row, col):
-                                pl.player.tokens = max(0, pl.player.tokens - 5)
-                            # Rotate the lit cell.
-                            self._hot_potato_rotate()
+    def _try_buy_shop_card(self, mx, my, pl) -> bool:
+        """Return True if the click landed on a shop card AND was
+        consumed (purchase succeeded OR purchase refused due to cap /
+        no funds — both consume the click)."""
+        sx = (SCREEN_W - (len(self.shop_cards) * CARD_W
+                          + max(0, len(self.shop_cards) - 1) * 12)) // 2
+        for i, name in enumerate(self.shop_cards):
+            cx = sx + i * (CARD_W + 12)
+            cy = SCREEN_H // 2 - CARD_H // 2 - 20
+            if not (cx <= mx <= cx + CARD_W and cy <= my <= cy + CARD_H):
+                continue
+            card = get_by_name(name)
+            if not card:
+                return True
+            # Joker-cap gate — refuse the purchase visually.
+            if len(pl.player.passive_cards) >= pl.joker_cap:
+                self.shop_full_flash_until = pygame.time.get_ticks() + 1200
+                return True
+            # Wholesaler — shop discount per copy, min cost 1.
+            discount = pl.player.upgrades.get("shop_discount", 0)
+            effective_cost = max(1 if card.cost > 0 else 0, card.cost - discount)
+            if pl.player.tokens >= effective_cost:
+                pl.player.tokens -= effective_cost
+                pl.player.passive_cards.append(card.name)
+                self.shop_cards.pop(i)
+            return True
+        return False
 
-                    # Fire on_x_placed jokers (Ricochet, Overload, etc).
-                    # Mirror O-placements don't fire X glyphs — they're
-                    # opponent marks under the player's control.
-                    if player_side == PLAYER_X:
-                        fired = self.card_system.fire_x_placed(
-                            self.board, pl.player, row, col,
-                        )
-                    else:
-                        fired = []
-                    # Echo boss: after the player's X, drop one O at
-                    # the cell mirrored across the board centre — if
-                    # that cell is empty and not a wall. Counts as an
-                    # AI placement (fires on_ai_placed triggers).
-                    if (
-                        pl.is_boss and pl.current_boss
-                        and pl.current_boss.mechanic == "echo"
-                        and player_side == PLAYER_X
-                    ):
-                        cr, cc = self._board_centre()
-                        mr, mc = 2 * cr - row, 2 * cc - col
-                        if (
-                            (mr, mc) in self.board.valid_cells
-                            and (mr, mc) != (row, col)
-                            and self.board.grid[mr][mc] == 0
-                            and (mr, mc) not in self.board.wall_cells
-                        ):
-                            if self.board.place_at(mr, mc, OPPONENT_O):
-                                self.card_system.fire_ai_placed(
-                                    self.board, pl.player, mr, mc,
-                                )
-                    self._animate_new_marks(before_move_count=before_marks)
-                    self._animate_jokers(fired)
-
-                    # Tide boss: every X line completed THIS turn is
-                    # scheduled for erasure in 1 AI move so the player
-                    # gets the score but loses the cells.
-                    if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "tide":
-                        new_lines = [
-                            cells for (val, cells) in self.board.get_lines()
-                            if val == PLAYER_X
-                        ]
-                        if new_lines:
-                            deadline = self.board.move_count + 1
-                            for line in new_lines:
-                                self._tide_clear_deadlines.append((deadline, list(line)))
-
-                    # End immediately if the player just completed a line
-                    # (or filled the last cell).
-                    if self._should_evaluate():
-                        self.evaluate_and_settle()
-                        return
-
-                    # Quick Draw consumes a skip stack immediately so the
-                    # turn budget is honoured even though the AI move is
-                    # deferred to the next frame.
-                    skip_stack = pl.player.upgrades.get("skip_opponent", 0)
-                    if skip_stack > 0:
-                        pl.player.upgrades["skip_opponent"] = skip_stack - 1
-                        # Quick Draw: AI skips this turn. Still tick poison
-                        # since the "AI turn" is conceptually elapsing.
-                        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "poison":
-                            self.board.tick_poison()
-                        if self._should_evaluate():
-                            self.evaluate_and_settle()
-                        return
-
-                    # Mirror boss has no AI response — the player just
-                    # keeps placing, alternating side, until the board
-                    # is full (then _should_evaluate fires).
-                    if is_mirror:
-                        if self._should_evaluate():
-                            self.evaluate_and_settle()
-                        return
-                    # Otherwise schedule the AI's response — the per-frame
-                    # tick fires it after AI_MOVE_DELAY_MS so the player
-                    # sees their X land before the response.
-                    self._ai_move_at = pygame.time.get_ticks() + AI_MOVE_DELAY_MS
-                    return
-
-        elif self.state == "shop":
-            if self.shop_cards:
-                sx = (SCREEN_W - (len(self.shop_cards) * CARD_W + max(0, len(self.shop_cards) - 1) * 12)) // 2
-                for i, name in enumerate(self.shop_cards):
-                    cx = sx + i * (CARD_W + 12)
-                    cy = SCREEN_H // 2 - CARD_H // 2 - 20
-                    if cx <= mx <= cx + CARD_W and cy <= my <= cy + CARD_H:
-                        card = get_by_name(name)
-                        if not card:
-                            break
-                        # Joker-cap gate — refuse the purchase visually if
-                        # the player is at their cap.
-                        if len(pl.player.passive_cards) >= pl.joker_cap:
-                            self.shop_full_flash_until = pygame.time.get_ticks() + 1200
-                            break
-                        # Wholesaler — shop discount per copy, min cost 1.
-                        discount = pl.player.upgrades.get("shop_discount", 0)
-                        effective_cost = max(1 if card.cost > 0 else 0, card.cost - discount)
-                        if pl.player.tokens >= effective_cost:
-                            pl.player.tokens -= effective_cost
-                            pl.player.passive_cards.append(card.name)
-                            self.shop_cards.pop(i)
-                        break
-
-            # Reroll button — free if free_rerolls remain, else REROLL_COST.
-            # Rect must match the draw layout in the shop draw branch.
-            btn_y = JOKER_ROW_Y - 70
-            reroll_btn = pygame.Rect(SCREEN_W // 2 - 220, btn_y, 200, 56)
-            if reroll_btn.collidepoint(mx, my):
-                free = pl.player.upgrades.get("free_rerolls", 0)
-                if free > 0:
-                    pl.player.upgrades["free_rerolls"] = free - 1
-                    offer_count = 4 + pl.player.upgrades.get("shop_offer_extra", 0)
-                    self.shop_cards = self._sample_shop_offers(offer_count)
-                elif pl.player.tokens >= 2:
-                    pl.player.tokens -= 2
-                    offer_count = 4 + pl.player.upgrades.get("shop_offer_extra", 0)
-                    self.shop_cards = self._sample_shop_offers(offer_count)
-
-            cont = pygame.Rect(SCREEN_W // 2 + 20, btn_y, 200, 56)
-            if cont.collidepoint(mx, my):
-                pl.next_level()
-                if pl.run_complete:
-                    self.state = "gameover"
-                else:
-                    self.start_game()
+    def _do_shop_reroll(self, pl) -> None:
+        """Reroll the shop's offers — free if free_rerolls remain,
+        else costs 2 tokens."""
+        free = pl.player.upgrades.get("free_rerolls", 0)
+        if free > 0:
+            pl.player.upgrades["free_rerolls"] = free - 1
+        elif pl.player.tokens >= 2:
+            pl.player.tokens -= 2
+        else:
+            return
+        offer_count = 4 + pl.player.upgrades.get("shop_offer_extra", 0)
+        self.shop_cards = self._sample_shop_offers(offer_count)
 
     def _joker_sell_price(self, name: str) -> int:
         """Sell price for a joker — 50% of cost, rounded down. Sacrifice
@@ -2080,6 +2092,11 @@ class GameEngine:
     # Raw coords for the in-game '?' help icon — kept as a tuple so the
     # bounds check works under the test harness's MagicMock'd pygame.
     HELP_RECT = (SCREEN_W - 48, 64, 36, 36)
+
+    # Click dispatch table — keyed on `self.state`. Populated at class
+    # body load time; references methods defined below. handle_click()
+    # routes to the matching entry; missing keys are silent no-ops.
+    _CLICK_HANDLERS: dict = {}
 
     def _help_button_rect(self) -> "pygame.Rect":
         """Single-source rect for the in-game '?' help icon. Sits in
@@ -2463,6 +2480,22 @@ class GameEngine:
             self.draw()
             self.clock.tick(60)
             await asyncio.sleep(0)
+
+
+# Populate the click-dispatch table now that every handler method
+# exists. Keys are state strings; values are unbound methods invoked
+# as `handler(self, mx, my)`.
+GameEngine._CLICK_HANDLERS = {
+    "menu": GameEngine._click_menu,
+    "codex": GameEngine._click_codex,
+    "scores": GameEngine._click_scores,
+    "intro": GameEngine._click_intro,
+    "transition": GameEngine._click_transition,
+    "boss_intro": GameEngine._click_boss_intro,
+    "gameover": GameEngine._click_gameover,
+    "game": GameEngine._click_game,
+    "shop": GameEngine._click_shop,
+}
 
 
 async def main():

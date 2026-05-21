@@ -1679,9 +1679,11 @@ class TestNewBosses:
         from config.bosses import BOSS_MAP
         for key in ("tide", "echo", "spotlight", "inverse", "taxman",
                     "vandal", "twins", "hourglass", "quicksand", "hivemind",
-                    "cartographer", "two_headed", "architect",
+                    "cartographer", "architect",
                     "plague_doctor", "hot_potato"):
             assert key in BOSS_MAP, f"{key} boss missing"
+        # Two-Headed was a verbatim duplicate of Twins and has been cut.
+        assert "two_headed" not in BOSS_MAP
 
     @patch('pygame.init')
     @patch('pygame.display.set_mode')
@@ -1809,3 +1811,138 @@ class TestNewBosses:
         engine._spotlight_anchor = (2, 2)
         result = engine.evaluate_and_settle()
         assert pl.last_ink == 0  # line is outside the spotlight
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_ghost_places_one_wall_on_boss_start(self, mock_caption, mock_mode, mock_init):
+        """The Ghost boss's setup branch drops exactly one wall cell."""
+        from main import GameEngine
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[], create=True), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        pl = engine.engine.state
+        # Force a boss game next, with Ghost as the picked mechanic.
+        pl.games_in_level = 2
+        pl.boss_order = ["ghost_wall"]
+        pl.boss_index = 0
+        engine.start_game()
+        assert pl.current_boss is not None
+        assert pl.current_boss.mechanic == "ghost_wall"
+        assert len(engine.board.wall_cells) == 1
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_mirror_player_alternates_x_and_o(self, mock_caption, mock_mode, mock_init):
+        """On Mirror, two consecutive player clicks place X then O."""
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[], create=True), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        engine.start_game()
+        engine.state = "game"
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["mirror"]
+        engine._mirror_player_o = False
+        avail, off_x, off_y = engine._board_layout()
+        # First click → X
+        mx = off_x + 0 * avail + avail // 2
+        my = off_y + 0 * avail + avail // 2
+        engine.handle_click(mx, my, 1)
+        assert engine.board.grid[0][0] == PLAYER_X
+        # Second click → O (no AI move happened in between)
+        mx = off_x + 1 * avail + avail // 2
+        my = off_y + 0 * avail + avail // 2
+        engine.handle_click(mx, my, 1)
+        assert engine.board.grid[0][1] == OPPONENT_O
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_mirror_does_not_schedule_ai_move(self, mock_caption, mock_mode, mock_init):
+        """The AI never moves on Mirror — _ai_move_at stays None."""
+        from main import GameEngine
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[], create=True), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        engine.start_game()
+        engine.state = "game"
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["mirror"]
+        engine._mirror_player_o = False
+        avail, off_x, off_y = engine._board_layout()
+        mx = off_x + 0 * avail + avail // 2
+        my = off_y + 0 * avail + avail // 2
+        engine.handle_click(mx, my, 1)
+        assert engine._ai_move_at is None
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_echo_mirrors_player_x_across_centre(self, mock_caption, mock_mode, mock_init):
+        """Echo boss: an X at (0, 0) on a 5x5 board drops an O at (4, 4)."""
+        from main import GameEngine
+        from game.board import PLAYER_X, OPPONENT_O
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[], create=True), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        engine.engine.state.level = 2  # 5x5 board
+        engine.start_game()
+        engine.state = "game"
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["echo"]
+        avail, off_x, off_y = engine._board_layout()
+        # Click (0, 0) — Echo should mirror to (4, 4) on a 5x5 board.
+        mx = off_x + 0 * avail + avail // 2
+        my = off_y + 0 * avail + avail // 2
+        engine.handle_click(mx, my, 1)
+        assert engine.board.grid[0][0] == PLAYER_X
+        assert engine.board.grid[4][4] == OPPONENT_O
+
+    @patch('pygame.init')
+    @patch('pygame.display.set_mode')
+    @patch('pygame.display.set_caption')
+    def test_echo_no_longer_in_extras_tuple(self, mock_caption, mock_mode, mock_init):
+        """Echo's response is the centre-mirror, not a generic 'extra AI
+        O' — confirm by checking _tick_ai_move's extras logic. Twins is
+        the only mechanic that should grant extras now."""
+        from main import GameEngine
+        from config.bosses import BOSS_MAP
+        engine = GameEngine()
+        with patch('main.get_unlocked_cards', return_value=[], create=True), \
+             patch('main.is_intro_seen', return_value=True):
+            engine.new_run()
+        engine.engine.state.level = 2  # 5x5 board
+        engine.start_game()
+        engine.state = "game"
+        pl = engine.engine.state
+        pl.is_boss = True
+        pl.current_boss = BOSS_MAP["echo"]
+        # Schedule an immediate AI move and tick it. The AI plays a
+        # normal single O — not 2.
+        import pygame as _pg
+        engine._ai_move_at = _pg.time.get_ticks() - 1
+        os_before = sum(
+            1 for r in range(engine.board.rows) for c in range(engine.board.cols)
+            if engine.board.grid[r][c] == -1
+        )
+        engine._tick_ai_move()
+        os_after = sum(
+            1 for r in range(engine.board.rows) for c in range(engine.board.cols)
+            if engine.board.grid[r][c] == -1
+        )
+        # _tick_ai_move on Echo runs the AI exactly once (1 new O).
+        assert os_after - os_before == 1

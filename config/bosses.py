@@ -43,7 +43,7 @@ BOSS_LIST: list[BossDef] = [
     BossDef(
         "Ghost",
         "A wall appears...",
-        "One cell per game becomes an invisible wall that blocks lines. Its location is revealed after the first normal game.",
+        "One random cell is silently turned into a wall — it looks empty but no mark will stick there. Plan around the unseen gap.",
         "ghost_wall",
     ),
     BossDef(
@@ -127,12 +127,6 @@ BOSS_LIST: list[BossDef] = [
         "cartographer",
     ),
     BossDef(
-        "Two-Headed",
-        "Two opponents.",
-        "Two AI minds take O's against you. Each of your moves is answered by two O placements.",
-        "two_headed",
-    ),
-    BossDef(
         "The Architect",
         "Walls everywhere.",
         "Game starts with a spiral maze of walls inset from the edges. Play down the middle.",
@@ -141,7 +135,7 @@ BOSS_LIST: list[BossDef] = [
     BossDef(
         "Plague Doctor",
         "Every line is sickly.",
-        "All cells are infected (green). Every X line you score this round counts for HALF ink. Stack heavy buffs to compensate.",
+        "The board glows green and ink runs thin: every X line you score this round counts for HALF ink. Stack heavy buffs to compensate.",
         "plague_doctor",
     ),
     BossDef(

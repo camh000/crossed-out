@@ -788,3 +788,53 @@ class TestCreativeDropScoring:
         contribs = cs.line_contributions(board, player, level=3)
         labels = [m[0] for m in contribs[0]["modifiers"]]
         assert not any("Cardinal" in l for l in labels)
+
+
+class TestWarMachineStacking:
+    """War Machine doubles Mult per copy — exponential stacking
+    matches Final Count's pattern. 1 copy → ×2, 2 copies → ×4."""
+
+    def _setup(self, stacks: int):
+        player = Player(
+            upgrades={"war_machine": stacks, "os_destroyed": 3},
+        )
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        return CardSystem(), player, board
+
+    def test_one_copy_doubles_mult(self):
+        cs, player, board = self._setup(1)
+        _, mult, _ = cs.score_breakdown(board, player, level_mult=1)
+        assert mult == 2.0
+
+    def test_two_copies_quadruple_mult(self):
+        cs, player, board = self._setup(2)
+        _, mult, _ = cs.score_breakdown(board, player, level_mult=1)
+        assert mult == 4.0
+
+    def test_three_copies_octuple_mult(self):
+        cs, player, board = self._setup(3)
+        _, mult, _ = cs.score_breakdown(board, player, level_mult=1)
+        assert mult == 8.0
+
+    def test_dormant_without_three_kills(self):
+        """No effect when os_destroyed < 3 — buff requires the kill
+        threshold even with stacks."""
+        cs = CardSystem()
+        player = Player(upgrades={"war_machine": 2, "os_destroyed": 2})
+        board = Board()
+        board.grid[0] = [PLAYER_X, PLAYER_X, PLAYER_X]
+        _, mult, _ = cs.score_breakdown(board, player, level_mult=1)
+        assert mult == 1.0
+
+
+class TestCostShape:
+    """Pins on glyph cost values — guards against accidental rebalancing
+    that would make pairs of glyphs strictly dominated."""
+
+    def test_overload_costs_more_than_flame(self):
+        """Overload (8-directional) costs 4; Flame (orthogonal-only)
+        costs 3. Same-cost would make Flame strictly dominated."""
+        from config.cards import get_by_name
+        assert get_by_name("Overload").cost == 4
+        assert get_by_name("Flame").cost == 3

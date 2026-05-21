@@ -318,10 +318,13 @@ class CardSystem:
         lethal = player.upgrades.get("lethal", 0)
         if lethal > 0 and is_boss:
             mult += 0.5 * lethal
-        # War Machine — if ≥3 O's destroyed this game, double Mult.
+        # War Machine — if ≥3 O's destroyed this game, double Mult per
+        # copy. Stacking is exponential (×2 / ×4 / ×8) to match the
+        # Final Count pattern — a flat 2*stacks would feel weak vs
+        # other "doubling" buffs in the pool.
         war_machine = player.upgrades.get("war_machine", 0)
         if war_machine > 0 and player.upgrades.get("os_destroyed", 0) >= 3:
-            mult *= 2 * war_machine
+            mult *= 2 ** war_machine
 
         if ink <= 0:
             return 0, mult, 0

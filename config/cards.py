@@ -79,7 +79,7 @@ ALL_CARDS: list[CardDef] = [
         triggers=("on_x_placed",),
     ),
     CardDef(
-        "Overload", 3,
+        "Overload", 4,
         "Once per game per copy: when you place an X next to O's, destroys them",
         "action",
         triggers=("on_x_placed",),

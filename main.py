@@ -119,6 +119,10 @@ class GameEngine:
         self._tide_clear_deadlines: list[tuple[int, list[tuple[int, int]]]] = []
         # Hot Potato: the currently-lit cell. Rotates each player move.
         self._hot_potato_cell: tuple[int, int] | None = None
+        # Mirror boss: True iff the player's NEXT placement is an O
+        # (the player alternates X / O themselves; the AI doesn't move).
+        # Toggles after each placement.
+        self._mirror_player_o: bool = False
 
         # Joker inspect modal — when set to a card name, draw() paints a
         # large card view over everything. In the shop state the modal
@@ -178,6 +182,9 @@ class GameEngine:
         pl.player.first_placed_cells = set()
         pl.player.last_x_cell = None
         pl.player.editor_hidden_cells = set()
+        # Mirror boss — reset the side-toggle so a fresh game always
+        # starts the player on X.
+        self._mirror_player_o = False
         pl.game_result = None
         # Re-seed every passive joker's stack into the upgrade counters.
         self.card_system.apply_passive_buffs(pl.player)
@@ -239,6 +246,13 @@ class GameEngine:
                 self._hot_potato_rotate()
             if boss.mechanic == "architect":
                 self._architect_walls()
+            # Ghost — silently turn one random empty cell into a wall.
+            # No visual treatment: walls have no art so the cell just
+            # reads as empty until the player tries to click it.
+            if boss.mechanic == "ghost_wall":
+                ghost_empty = self.board.get_empty_cells()
+                if ghost_empty:
+                    self.board.wall_cells.append(random.choice(ghost_empty))
 
             pl.is_boss = True
             self.state = "boss_intro"
@@ -367,14 +381,20 @@ class GameEngine:
             return
         self._ai_move_at = None
         pl = self.engine.state
+        # Mirror boss — the AI never plays; the player alternates X / O
+        # themselves. Just clear the schedule and bail.
+        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "mirror":
+            return
         before = self.board.move_count
-        # Boss-specific extra AI moves. Echo and Twins both run the AI
-        # an extra time on top of the normal move; Hivemind boosts the
-        # AI's tactical depth via fade_age=None even on Blind.
+        # Twins gives the AI one extra freeform O placement on top of
+        # its normal move. Echo's "extra O" is a positional reflection
+        # of the player's last X across the board centre — handled
+        # immediately in handle_click, not here — so Echo is NOT in
+        # this extras tuple. Two-Headed was a verbatim duplicate of
+        # Twins and has been removed from the boss pool.
         extras = 0
-        if pl.is_boss and pl.current_boss:
-            if pl.current_boss.mechanic in ("echo", "twins", "two_headed"):
-                extras = 1
+        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "twins":
+            extras = 1
         for i in range(1 + extras):
             ai = OpponentAI(
                 self.board,
@@ -1205,6 +1225,14 @@ class GameEngine:
                         True, ante_color,
                     )
                     surf.blit(ante_txt, (SCREEN_W - 10 - ante_txt.get_width(), 85))
+                # Mirror — show which side the player's next click places.
+                if pl.current_boss.mechanic == "mirror":
+                    side = "O" if self._mirror_player_o else "X"
+                    side_color = COLOR_O if self._mirror_player_o else COLOR_X
+                    side_txt = self.font.render(
+                        f"Next: {side}", True, side_color,
+                    )
+                    surf.blit(side_txt, (SCREEN_W - 10 - side_txt.get_width(), 110))
 
             # timed boss countdown
             if (
@@ -1661,18 +1689,33 @@ class GameEngine:
             cell = self._cell_under(mx, my)
             if cell is not None and self.board.grid[cell[0]][cell[1]] == 0:
                 row, col = cell
+                # Mirror boss: the player alternates X / O themselves.
+                # _mirror_player_o tracks which side this click places;
+                # the AI doesn't move on Mirror games.
+                is_mirror = (
+                    pl.is_boss and pl.current_boss
+                    and pl.current_boss.mechanic == "mirror"
+                )
+                player_side = (
+                    OPPONENT_O if (is_mirror and self._mirror_player_o)
+                    else PLAYER_X
+                )
                 # Capture the move_count BEFORE placement so we can
                 # detect all marks landed during this turn (player's X
                 # plus any triggered placements from Ricochet / Blind
                 # Shot / Double Strike etc).
                 before_marks = self.board.move_count
-                placed = self.board.place_at(row, col, PLAYER_X)
+                placed = self.board.place_at(row, col, player_side)
                 if placed:
                     pl.player.cells_played.append((row, col))
+                    if is_mirror:
+                        self._mirror_player_o = not self._mirror_player_o
                     # Track "most-recently placed X" for the Last Word
                     # glyph and other "most-recent" effects. Per-game
-                    # scratch — cleared in start_game.
-                    pl.player.last_x_cell = (row, col)
+                    # scratch — cleared in start_game. Mirror O-placements
+                    # don't update this — Last Word is X-only.
+                    if player_side == PLAYER_X:
+                        pl.player.last_x_cell = (row, col)
 
                     # Boss side-effects that follow the player's move
                     # directly. Poison TICK happens later, after the AI
@@ -1706,10 +1749,36 @@ class GameEngine:
                             # Rotate the lit cell.
                             self._hot_potato_rotate()
 
-                    # Fire on_x_placed jokers (Ricochet, Overload). Any
-                    # triggered placements bump move_count and stamp
-                    # their cells, so _animate_new_marks catches them.
-                    fired = self.card_system.fire_x_placed(self.board, pl.player, row, col)
+                    # Fire on_x_placed jokers (Ricochet, Overload, etc).
+                    # Mirror O-placements don't fire X glyphs — they're
+                    # opponent marks under the player's control.
+                    if player_side == PLAYER_X:
+                        fired = self.card_system.fire_x_placed(
+                            self.board, pl.player, row, col,
+                        )
+                    else:
+                        fired = []
+                    # Echo boss: after the player's X, drop one O at
+                    # the cell mirrored across the board centre — if
+                    # that cell is empty and not a wall. Counts as an
+                    # AI placement (fires on_ai_placed triggers).
+                    if (
+                        pl.is_boss and pl.current_boss
+                        and pl.current_boss.mechanic == "echo"
+                        and player_side == PLAYER_X
+                    ):
+                        cr, cc = self._board_centre()
+                        mr, mc = 2 * cr - row, 2 * cc - col
+                        if (
+                            (mr, mc) in self.board.valid_cells
+                            and (mr, mc) != (row, col)
+                            and self.board.grid[mr][mc] == 0
+                            and (mr, mc) not in self.board.wall_cells
+                        ):
+                            if self.board.place_at(mr, mc, OPPONENT_O):
+                                self.card_system.fire_ai_placed(
+                                    self.board, pl.player, mr, mc,
+                                )
                     self._animate_new_marks(before_move_count=before_marks)
                     self._animate_jokers(fired)
 
@@ -1746,6 +1815,13 @@ class GameEngine:
                             self.evaluate_and_settle()
                         return
 
+                    # Mirror boss has no AI response — the player just
+                    # keeps placing, alternating side, until the board
+                    # is full (then _should_evaluate fires).
+                    if is_mirror:
+                        if self._should_evaluate():
+                            self.evaluate_and_settle()
+                        return
                     # Otherwise schedule the AI's response — the per-frame
                     # tick fires it after AI_MOVE_DELAY_MS so the player
                     # sees their X land before the response.

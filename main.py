@@ -200,71 +200,12 @@ class GameEngine:
                 self.finish_run(won=False)
                 return
 
-        # every 3rd game is a boss — set the boss state BEFORE firing
-        # game-start triggers so on_game_start handlers see is_boss=True
-        # (some triggers may want to behave differently in boss games).
+        # Every 3rd game is a boss — set the boss state BEFORE firing
+        # game-start triggers so on_game_start handlers see is_boss=True.
         if pl.games_in_level % 3 == 0:
-            # Per-run boss order is a shuffled list of mechanics. We walk
-            # it via boss_index which increments each boss encounter.
-            # The old code used (games_in_level // 3 - 1) which always
-            # evaluated to 0 since games_in_level resets per level, so
-            # the player only ever saw BOSS_LIST[0] — The Blind.
-            order = pl.boss_order or [b.mechanic for b in BOSS_LIST]
-            mechanic = order[pl.boss_index % len(order)]
-            pl.boss_index += 1
-            boss = next(b for b in BOSS_LIST if b.mechanic == mechanic)
-            pl.current_boss = boss
-            base_ante = pl.get_ante_target()
-            # Shield — reduces the boss ante target by 20% per copy
-            # (multiplicative). Capped to at least 1.
-            shield = pl.player.upgrades.get("shield", 0)
-            if shield > 0:
-                base_ante = max(1, int(base_ante * (0.8 ** shield)))
-            pl.ante_target = base_ante
-            self.engine.current_boss_mechanic = boss.mechanic
-
-            # apply boss-specific setup
-            empty = self.board.get_empty_cells()
-            if boss.mechanic == "poison":
-                self.board.poison_cells = random.sample(empty, min(3, len(empty)))
-            if boss.mechanic == "weighted":
-                self.board.weights = self.board.get_weights()
-            if boss.mechanic == "timed":
-                self.countdown_start = pygame.time.get_ticks()
-            if boss.mechanic == "swap":
-                self.board.swap_counter = 0
-            if boss.mechanic == "spotlight":
-                self._spotlight_move()
-            else:
-                self._spotlight_anchor = None
-            # Reset Tide schedule + Hourglass counter on every boss start.
-            self._tide_clear_deadlines = []
-            pl.player.upgrades.pop("hourglass_counter", None)
-            pl.player.upgrades.pop("carto_moves", None)
-            self._hot_potato_cell = None
-            if boss.mechanic == "hot_potato":
-                self._hot_potato_rotate()
-            if boss.mechanic == "architect":
-                self._architect_walls()
-            # Ghost — silently turn one random empty cell into a wall.
-            # No visual treatment: walls have no art so the cell just
-            # reads as empty until the player tries to click it.
-            if boss.mechanic == "ghost_wall":
-                ghost_empty = self.board.get_empty_cells()
-                if ghost_empty:
-                    self.board.wall_cells.append(random.choice(ghost_empty))
-
-            pl.is_boss = True
-            self.state = "boss_intro"
-            self._boss_intro_start = pygame.time.get_ticks()
+            self._begin_boss_game(pl)
         else:
-            pl.ante_target = 0
-            pl.is_boss = False
-            pl.current_boss = None
-            self.engine.current_boss_mechanic = None
-            pl.shop_phase = False
-            self.state = "countdown"
-            self.countdown_start = pygame.time.get_ticks()
+            self._begin_normal_game(pl)
 
         # Fire on_game_start triggers (Cell Lock, Fortress, Ghost Board,
         # Blind Shot, Double Strike, Quick Draw) AFTER boss setup so any
@@ -273,6 +214,73 @@ class GameEngine:
         fired = self.card_system.fire_game_start(self.board, pl.player)
         self._animate_new_marks(before_move_count=before_marks)
         self._animate_jokers(fired)
+
+    def _begin_boss_game(self, pl) -> None:
+        """Pick the next boss from `pl.boss_order`, compute the ante
+        target (Shield-adjusted), apply per-mechanic board setup, and
+        transition to the boss intro animation."""
+        order = pl.boss_order or [b.mechanic for b in BOSS_LIST]
+        mechanic = order[pl.boss_index % len(order)]
+        pl.boss_index += 1
+        boss = next(b for b in BOSS_LIST if b.mechanic == mechanic)
+        pl.current_boss = boss
+        # Shield — reduces the boss ante target by 20% per copy
+        # (multiplicative). Capped to at least 1.
+        base_ante = pl.get_ante_target()
+        shield = pl.player.upgrades.get("shield", 0)
+        if shield > 0:
+            base_ante = max(1, int(base_ante * (0.8 ** shield)))
+        pl.ante_target = base_ante
+        self.engine.current_boss_mechanic = boss.mechanic
+        self._setup_boss_board(boss)
+        pl.is_boss = True
+        self.state = "boss_intro"
+        self._boss_intro_start = pygame.time.get_ticks()
+
+    def _begin_normal_game(self, pl) -> None:
+        pl.ante_target = 0
+        pl.is_boss = False
+        pl.current_boss = None
+        self.engine.current_boss_mechanic = None
+        pl.shop_phase = False
+        self.state = "countdown"
+        self.countdown_start = pygame.time.get_ticks()
+
+    def _setup_boss_board(self, boss) -> None:
+        """Per-mechanic board mutations + scratch resets. Called once
+        from `_begin_boss_game` after the boss has been chosen."""
+        bm = boss.mechanic
+        # Always-reset scratch (no matter the mechanic).
+        self._tide_clear_deadlines = []
+        pl = self.engine.state
+        pl.player.upgrades.pop("hourglass_counter", None)
+        pl.player.upgrades.pop("carto_moves", None)
+        self._hot_potato_cell = None
+        if bm != "spotlight":
+            self._spotlight_anchor = None
+        # Per-mechanic setup.
+        if bm == "poison":
+            empty = self.board.get_empty_cells()
+            self.board.poison_cells = random.sample(empty, min(3, len(empty)))
+        elif bm == "weighted":
+            self.board.weights = self.board.get_weights()
+        elif bm == "timed":
+            self.countdown_start = pygame.time.get_ticks()
+        elif bm == "swap":
+            self.board.swap_counter = 0
+        elif bm == "spotlight":
+            self._spotlight_move()
+        elif bm == "hot_potato":
+            self._hot_potato_rotate()
+        elif bm == "architect":
+            self._architect_walls()
+        elif bm == "ghost_wall":
+            # Ghost — silently turn one random empty cell into a wall.
+            # No visual treatment: walls have no art so the cell just
+            # reads as empty until the player tries to click it.
+            ghost_empty = self.board.get_empty_cells()
+            if ghost_empty:
+                self.board.wall_cells.append(random.choice(ghost_empty))
 
     def do_shop(self):
         pl = self.engine.state
@@ -385,50 +393,62 @@ class GameEngine:
         # themselves. Just clear the schedule and bail.
         if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "mirror":
             return
+        self._execute_ai_placement(pl)
+        self._apply_post_move_mechanics(pl)
+        if self._should_evaluate():
+            self.evaluate_and_settle()
+
+    def _execute_ai_placement(self, pl) -> None:
+        """Run the AI's O placement (once normally, twice on Twins).
+        Hivemind boosts the AI's difficulty for this turn. Echo's
+        positional response is NOT here — it fires inline at the
+        player's X placement to share its move budget with the AI."""
         before = self.board.move_count
-        # Twins gives the AI one extra freeform O placement on top of
-        # its normal move. Echo's "extra O" is a positional reflection
-        # of the player's last X across the board centre — handled
-        # immediately in handle_click, not here — so Echo is NOT in
-        # this extras tuple. Two-Headed was a verbatim duplicate of
-        # Twins and has been removed from the boss pool.
         extras = 0
-        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "twins":
+        if (
+            pl.is_boss and pl.current_boss
+            and pl.current_boss.mechanic == "twins"
+        ):
             extras = 1
-        for i in range(1 + extras):
+        for _ in range(1 + extras):
             ai = OpponentAI(
                 self.board,
                 fade_age=self._ai_fade_age(),
                 hidden_cells=pl.player.editor_hidden_cells,
             )
-            if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "hivemind":
+            if (
+                pl.is_boss and pl.current_boss
+                and pl.current_boss.mechanic == "hivemind"
+            ):
                 ai.difficulty = 1.0  # always-optimal heuristic
             move = ai.get_best_move()
             if move:
                 self.board.place_at(move[0], move[1], OPPONENT_O)
-                self.card_system.fire_ai_placed(self.board, pl.player, move[0], move[1])
+                self.card_system.fire_ai_placed(
+                    self.board, pl.player, move[0], move[1],
+                )
         self._animate_new_marks(before_move_count=before)
-        # Vandal boss: erase a random non-edge X cell each AI turn.
-        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "vandal":
+
+    def _apply_post_move_mechanics(self, pl) -> None:
+        """Boss mechanics that fire after the AI's move: Vandal erasure,
+        Hourglass wall accumulation, Quicksand decay, Tide deadline
+        sweep, Poison TTL tick."""
+        if not (pl.is_boss and pl.current_boss):
+            return
+        bm = pl.current_boss.mechanic
+        if bm == "vandal":
             self._vandal_strike()
-        # Hourglass boss: every 4 AI moves, drop a wall on a random empty cell.
-        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "hourglass":
+        elif bm == "hourglass":
             counter = pl.player.upgrades.get("hourglass_counter", 0) + 1
             pl.player.upgrades["hourglass_counter"] = counter
             if counter % 4 == 0:
                 self._hourglass_drop_wall()
-        # Quicksand boss: decay marks not reinforced by an adjacent same-side mark.
-        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "quicksand":
+        elif bm == "quicksand":
             self._quicksand_tick()
-        # Tide boss: clear any cells whose erase deadline has passed.
-        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "tide":
+        elif bm == "tide":
             self._tide_tick()
-        # Poison ticks after the AI's turn — same as the old synchronous
-        # flow, just deferred along with the move.
-        if pl.is_boss and pl.current_boss and pl.current_boss.mechanic == "poison":
+        elif bm == "poison":
             self.board.tick_poison()
-        if self._should_evaluate():
-            self.evaluate_and_settle()
 
     def _spotlight_move(self) -> None:
         """Spotlight boss helper — pick a new random top-left anchor for
